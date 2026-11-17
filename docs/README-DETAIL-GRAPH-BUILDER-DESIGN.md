@@ -1,0 +1,206 @@
+# The graph builder: design notes
+
+`dosgraph` (`scripts/dosgraph/`, run by `scripts/build_callgraph.py`; usage in
+[README-DETAIL-GRAPH-BUILDER.md](README-DETAIL-GRAPH-BUILDER.md)) turns a directory of 16-bit MS-DOS executables into
+a navigable call graph: one JSON graph, one listing per function, and a README that explains how every edge was
+derived. The MCP server in `src/` serves that tree to LLM clients (listings, callers/callees, call chains, work units,
+progress). This document explains the choices behind the generator, where they are specific to real-mode DOS and to
+Turbo Pascal-era toolchains, and what it would take to point the same design at ELF or 64-bit Windows binaries.
+
+## What it produces
+
+```
+<tree>/
+  navigation/callgraph.json   nodes, edges, programs, frames, aliases, counts, provenance
+  navigation/analysis.json    per-program diagnostics: unresolved jumps and why, tables, non-returning functions
+  navigation/README.md        the method, step by step, and the schema (written by emit.py, so it matches the code)
+  units/<space>/functions/<SPACE>_<addr>.asm   one control-flow listing per function
+```
+
+A node id is `<SPACE>:<hex address>`. The space names the file the bytes come from (`MAIN_EXE`, an overlay
+`MAIN_OVR-0020`, a record `SOUND_PAK-0001`), and the address is what the listing lines and the code's own jumps show.
+Ids are stable across rebuilds as long as the bytes are, which is what lets progress records, annotations and
+`/* Implements: … */` comments in a reimplementation refer to them.
+
+## Principles
+
+1. **The bytes are the only source of truth.** Every node and edge is derived from the files, never from another
+   tool's output or a reader's interpretation. A disassembler's linear sweep, symbol guesses or decompiler output are
+   not inputs. When outside knowledge is unavoidable (code a program loads from a data file, see `loaded.py`), it is
+   declared in a separate file, every claim in it is checked against the bytes, and a declaration the bytes contradict
+   aborts the build.
+2. **Fail loudly, never half-read.** Every container parser (MZ, EXEPACK, overlay files, appended overlay sections,
+   data containers) validates strictly and raises `FormatError` for anything it does not understand. A directory is
+   built whole or not at all. A wrong pairing (an overlay file with the wrong program) cannot parse, so strict parsing
+   doubles as the pairing test.
+3. **Control flow, not linear sweep.** Functions are found by recursive descent from proven entries. Data is never
+   decoded as code because something happened to look like an instruction. A function's listing holds the
+   instructions its control flow reaches, in address order, so string bytes and padding never appear as jumps.
+4. **Uniform rules, no special cases.** A rule must hold for every program it is applied to; an idiom is recognised by
+   its semantics (a far pointer the code builds and keeps together), never by an address, a file name or a byte
+   signature of one program. When a rule turns out wrong for one input, it is fixed for all inputs.
+5. **Uncertainty is data.** Nothing is silently dropped or silently guessed:
+   * an indirect transfer the analysis cannot resolve gets an edge to `unknown:<site>` whose `reason` says why
+     (the previous interrupt handler, a value computed at run time, a register set by a caller);
+   * a function that exists only because its address is built somewhere, and that no proven transfer reaches, is
+     `provisional` and carries its `evidence`;
+   * resolved indirect edges carry `through` (what was read: `ds:[6a78]`, `ds:[index+6786]`, a record field) and
+     record-field matches are `provisional`;
+   * every edge carries the branch `conditions` under which its site executes.
+6. **Deterministic output.** The same inputs give the same tree byte for byte (apart from `generated_at`), so a test
+   can require a checked tree to equal a fresh build.
+7. **Built for small readers.** The consumer is often a weak model with a small attention budget. Listings are short
+   and self-contained, every call line names its target node (`; → MAIN_OVR-0041:0100`), ids are readable, and the
+   README states the method, so a reader can check a claim instead of trusting it.
+
+## Pipeline
+
+```
+game.py     inventory: which files are programs, which overlay file belongs to which program, batch files
+binary.py   loading: MZ header, relocations, .COM at 100h, modules at 0, INT 3Fh overlay stubs + .OVR,
+            appended overlay sections (RTLink/Plus); address spaces and far-address resolution
+exepack.py  unpack EXEPACK images before anything else looks at them
+x86.py      capstone decoding (16-bit) and classification of control transfers
+flow.py     recursive descent, function boundaries, non-returning fixpoint, control dependence
+tables.py   near jump tables whose index the code bounds
+pointers.py dataflow: constant far pointers, where they are stored, which indirect transfers read them
+links.py    edges between programs of one directory: interrupts, exec, open; batch files
+loaded.py   code read from data files at run time (declared, checked against the bytes)
+emit.py     graph JSON, listings, README; write_tree writes the tree and removes listings a rebuild no longer makes
+```
+
+Each program is analysed on its own (steps 2-5 of the generated README), then the graphs are merged and linked.
+
+### Loading and address spaces
+
+A program contributes one space for its load image plus one per overlay module or overlay section. Spaces have a
+`code_base` (where segment 0 of the image sits) so a far call `lcall seg, off` resolves to (space, offset) through the
+relocation table: relocated segment words name image segments, unrelocated ones name overlay stub segments. Overlay
+stubs are resolved to the overlay module entry they load, and the stub addresses become `aliases`. Unpacked bytes
+(EXEPACK, container records) have no file offset; nodes record `file_offset: null` instead of a wrong number.
+
+### Functions
+
+Descent starts from the program entry, module jump-table entries, overlay entries, every direct call target, every
+cross-space jump target, every resolved indirect target and every installed interrupt handler. It follows conditional
+and unconditional jumps, stops at returns, DOS exits, indirect jumps, tail jumps into another function's start and at
+falling into another function's start (recorded as an edge with `returns: false`). A jump target that is not a call
+target belongs to every function that jumps to it, so shared tails appear in each listing. Non-returning functions
+are a fixpoint (no reachable return, only tail transfers to non-returning functions); nothing after a call to one is
+decoded.
+
+### Jump tables
+
+`jmp word ptr [seg:][bx|si|di + disp]` is followed into every entry only when a small abstract interpretation of the
+straight-line path before it bounds the index (unsigned `cmp`/`jcc` guards and the arithmetic dispatch idioms use),
+the path has no other entry, and every entry decodes in the same space. Otherwise the jump stays unresolved with a
+reason. Cases join the function's listing rather than becoming nodes.
+
+### Pointers
+
+Each function is walked as dataflow over 16-bit registers, DS/ES and the words pushed on the current run. Values are
+constants, segments (relocated words, CS, DGROUP), words read from memory, halves of `les`/`lds` pointers and the
+vector INT 21h/35h returns. Merge points keep up to 8 separate states and join at loop heads; a dataflow that does not
+settle aborts the build. Every far pointer the code builds and keeps together (stored as a dword, stored into a record
+field, pushed as an argument pair, handed to DOS as DS:DX, pushed for `retf`) is recorded; every indirect transfer is a
+use, and `resolve()` connects uses to the pointers stored where they read. That connection is the proof that a target
+is code. A built pointer nothing is seen calling through is only a guess: its target becomes a provisional function
+only if it decodes as a self-contained procedure that touches no already-decoded code.
+
+### Links between programs
+
+`interrupt` (an `int n` site to the handlers resident programs install for n), `runs` (a function names another
+program and reaches DOS exec), `loads` (names it and reaches DOS open), and batch files as nodes whose lines run
+programs. Link edges are boundaries, not dependencies: the work planner ignores them.
+
+### Declared modules
+
+When a program reads code from a data file into a heap block and calls it through a far pointer it computes at run
+time, no constant leads there and the dataflow cannot see the link. Rather than trace heap pointers through a file
+loader, `loaded_modules.json` (kept beside the inputs, not in this repository) declares, per far-pointer variable, the
+file, the records, the layout (entered at 100h or at 0) and the evidence. A container reader is a plugin named by the
+entry, so no container format is built in. Every claim is checked: the record exists and decodes, and the program has
+a far call through that variable.
+
+## Where the design is overfit
+
+| Assumption | Where it lives | Specific to |
+|---|---|---|
+| 16-bit decoding, segment:offset addresses, paragraphs, near/far calls, `retf` dispatch | x86.py, binary.py, pointers.py, tables.py | x86 real mode |
+| Relocations are segment words; DGROUP is a relocated segment loaded into DS at startup | binary.py, pointers.dgroup | MZ, Borland toolchains |
+| Overlays are INT 3Fh stub segments plus a `TPOV`/`FBOV` file; RTLink/Plus sections appended to the EXE | binary.py | Turbo Pascal 5/6, RTLink |
+| `.COM` at 100h, PSP below it; modules loaded at offset 0 with a `jmp` table | binary.load_executable | DOS |
+| OS services by INT 21h AH (exec 4Bh, open 3Dh, set vector 25h, get vector 35h, TSR 31h/INT 27h) | links.py, pointers.py, flow.py | DOS |
+| Batch file semantics (COMMAND.COM search order, `if`, `goto`) | links.py | DOS |
+| Stack discipline: callee pops its `ret n` words; Pascal strings; `ExitProc` chains | pointers.py, flow.py | Turbo Pascal calling convention |
+| Jump-table idioms (`shl bx,1; jmp cs:[bx+T]`) | tables.py | 16-bit compilers and hand-written assembler |
+| State caps (8 states per merge, 8 alternatives per value) | pointers.py | sized for programs of ~100 KB |
+
+What is not overfit: the evidence model (proven / provisional / unknown with reasons), the per-function listing with
+target annotations, control dependence for conditions, the non-returning fixpoint, cross-program links as boundaries,
+declared modules checked against the bytes, and the output format. The server only assumes `SPACE:hex` ids and the
+listing line format `addr  bytes  mnemonic operands`; its address parser (`src/graph/addresses.ts`) learns how code
+writes addresses (`frames`) by voting over edges, and knows the x86 call spellings (`lcall seg, off`, `call word …`).
+
+Known gaps even within its domain: Borland C sparse `switch` (a compare loop over a value table, then
+`jmp cs:[bx+2N]`) and function pointers in record fields are not followed; aligned indexed writes only mark a table
+"also filled at run time".
+
+## Broadening it
+
+The seams to cut along are the ones the table above names: **container/loader**, **architecture**, **OS model** and
+**runtime idioms**. A sketch of each for ELF and PE32+.
+
+### Loader → spaces, entries, relocations, symbols
+
+Make `binary.py` an interface: a loader returns spaces (name, bytes, base address, file offset), entry points, a way
+to resolve an absolute target to (space, offset), relocation sites, and any symbols.
+
+* **ELF (x86-64, AArch64)**: spaces per executable `PT_LOAD` segment (or per section for readability), addresses are
+  virtual addresses (PIE: offsets from 0). Free function starts: `.symtab`/`.dynsym`, `.init_array`/`.fini_array`,
+  and `.eh_frame` FDEs, which give exact function bounds. Imports: PLT stubs → external nodes `libc.so.6!open`.
+  Relocations (`R_X86_64_RELATIVE` in `.data.rel.ro`) mark pointer-sized slots that hold code addresses: vtables
+  and function-pointer tables come almost for free.
+* **PE32+ (Windows x64)**: spaces per section, addresses are RVAs. `.pdata` RUNTIME_FUNCTION entries give exact
+  function bounds for every non-leaf function; exports, TLS callbacks, the CFG guard table and delay imports add
+  entries; the IAT gives external nodes `KERNEL32.dll!CreateFileW`; base relocations (`.reloc`) mark absolute
+  pointers in data.
+* Node ids stay `<FILE>:<addr>` with wider addresses (`CORE_DLL:00012a40`); listings stay per function.
+
+With symbols, unwind tables and relocations, most of what `pointers.py` proves the hard way on DOS is given by the
+format. Keep the evidence model: a symbol or unwind entry is proof of a function start; a relocation-backed slot read
+by an indirect call is the same kind of proof as a stored constant pointer here.
+
+### Architecture
+
+`x86.py` classifies transfers for one mode. Generalise it to: decode (capstone mode per arch), classify (call, jump,
+conditional, return, indirect, trap, no-return), and give operand forms. AArch64 adds `bl`, `br`, `blr`, `ret`,
+`cbz`/`tbz`, literal pools and `adrp`+`add` address pairs; x86-64 adds RIP-relative operands. Jump tables become
+`lea r, [rip+T]; movsxd; add; jmp r` (x86-64) or `adr; ldrb/ldrh; add; br` (AArch64): the bounded-index abstract
+interpretation in `tables.py` carries over with new idioms.
+
+### OS model
+
+Replace INT 21h AH with a table of calls by import: `execve`/`posix_spawn`/`CreateProcessW` (runs),
+`dlopen`/`LoadLibraryW` (loads), `exit`/`abort`/`ExitProcess`/`__stack_chk_fail` (non-returning), signal and
+exception handler installation (`sigaction`, `SetUnhandledExceptionFilter`, SEH scopes) in place of interrupt vectors.
+Link discovery by string constant still works: the name passed to `dlopen` is usually a literal.
+
+### Runtime idioms
+
+C++ vtables, Objective-C/Swift metadata, Go and Rust runtime tables are where a binary keeps its function pointers.
+Each is a plugin that turns a table into stored pointers with evidence, exactly like the record-field matches here.
+
+### What not to rebuild
+
+The pure-Python dataflow is fine for programs of a few hundred KB. For multi-megabyte binaries, take function
+boundaries and cross-references from Ghidra, rizin or IDA as **declared knowledge** (with their provenance on every
+node) rather than re-implementing their analysis, and keep this generator's value where it is: the evidence model, the
+per-function listings, conditions, links between programs, and a format the server and small models can navigate.
+
+## Testing
+
+Synthetic binaries, built byte by byte in `scripts/tests/conftest.py` (`mz()`, `build()` for overlays,
+`exepack()`, `rtlink()`), drive every rule; untrusted input (headers, tables, declarations) has boundary tests for
+every branch, and the suite holds 100% branch coverage. Acceptance tests on real inputs, which require a checked tree
+to equal a fresh build, live with those inputs outside this repository.

@@ -1,0 +1,24 @@
+# Local trace/metrics sink: `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f observability/docker-compose.yml up -d`
+#   OTLP in:      http://localhost:4318 (http/protobuf, what omp and the MCP server send), grpc :4317
+#   Jaeger UI:    http://localhost:16686   (query API: /api/v3/services, /api/v3/traces?query.service_name=reverser-progress-graph&query.start_time_min=...&query.start_time_max=...)
+#   Metrics:      http://localhost:8889/metrics
+#   Raw JSONL:    observability/data/{traces,metrics}.jsonl
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+      - ./data:/data
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on: [jaeger]
+    restart: unless-stopped
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686"
+    restart: unless-stopped

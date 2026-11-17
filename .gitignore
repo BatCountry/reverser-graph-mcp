@@ -1,0 +1,11 @@
+.venv/
+build/
+node_modules/
+generated/
+game-data/
+scratch/
+notes/
+
+coverage/
+__pycache__/
+.coverage

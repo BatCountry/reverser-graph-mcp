@@ -1,0 +1,5 @@
+# Python 3.14 virtual environment for the graph builder (scripts/) and its tests:
+#   uv venv .venv && uv pip install -r venv-requirements.txt
+capstone>=5.0
+pytest>=9.0
+pytest-cov>=7.0

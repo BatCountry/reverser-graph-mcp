@@ -1,0 +1,38 @@
+# OpenTelemetry Collector: receives OTLP from the MCP server and from omp, fans out to
+#   - Jaeger (trace UI and query API),
+#   - JSONL files under /data (greppable without any UI),
+#   - a Prometheus scrape endpoint on :8889 (metrics).
+# The same config works on a cluster: point the `otlp/jaeger` exporter at the deployed backend.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  file/traces:
+    path: /data/traces.jsonl
+  file/metrics:
+    path: /data/metrics.jsonl
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, file/metrics]

@@ -1,0 +1,1673 @@
+{
+ "bda": [
+  {
+   "seg": "00",
+   "offset": "00",
+   "size": "256dwords",
+   "text": "Interrupt vector table"
+  },
+  {
+   "seg": "30",
+   "offset": "00",
+   "size": "256bytes",
+   "text": "Stack area used during post and bootstrap"
+  },
+  {
+   "seg": "40",
+   "offset": "00",
+   "size": "word",
+   "text": "COM1 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "02",
+   "size": "word",
+   "text": "COM2 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "04",
+   "size": "word",
+   "text": "COM3 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "06",
+   "size": "word",
+   "text": "COM4 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "08",
+   "size": "word",
+   "text": "LPT1 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "0A",
+   "size": "word",
+   "text": "LPT2 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "0C",
+   "size": "word",
+   "text": "LPT3 port address"
+  },
+  {
+   "seg": "40",
+   "offset": "0E",
+   "size": "word",
+   "text": "LPT4 port address (except PS/2)\nExtended BIOS Data Area segment (PS/2, see EBDA)"
+  },
+  {
+   "seg": "40",
+   "offset": "10",
+   "size": "2 bytes",
+   "text": "Equipment list flags (see INT 11)\n│7│6│5│4│3│2│1│0│ 40:10 (value in INT 11 register AL)\n│ │ │ │ │ │ │ └─ IPL diskette installed\n│ │ │ │ │ │ └── math coprocessor\n│ │ │ │ ├─┼─── old PC system board RAM < 256K\n│ │ │ │ │ └── pointing device installed (PS/2)\n│ │ │ │ └─── not used on PS/2\n│ │ └─┴──── initial video mode\n└─┴─────── # of diskette drives, less 1\n│7│6│5│4│3│2│1│0│ 40:11  (value in INT 11 register AH)\n│ │ │ │ │ │ │ └─ 0 if DMA installed\n│ │ │ │ └─┴─┴── number of serial ports\n│ │ │ └─────── game adapter\n│ │ └──────── not used, internal modem (PS/2)\n└─┴───────── number of printer ports"
+  },
+  {
+   "seg": "40",
+   "offset": "12",
+   "size": "byte",
+   "text": "PCjr: infrared keyboard link error count"
+  },
+  {
+   "seg": "40",
+   "offset": "13",
+   "size": "word",
+   "text": "Memory size in Kbytes  (see INT 12)"
+  },
+  {
+   "seg": "40",
+   "offset": "15",
+   "size": "byte",
+   "text": "Reserved"
+  },
+  {
+   "seg": "40",
+   "offset": "16",
+   "size": "byte",
+   "text": "PS/2 BIOS control flags"
+  },
+  {
+   "seg": "40",
+   "offset": "17",
+   "size": "byte",
+   "text": "Keyboard flag byte 0 (see KB FLAGS)\n│7│6│5│4│3│2│1│0│ keyboard flag byte 0\n│ │ │ │ │ │ │ └─── right shift key depressed\n│ │ │ │ │ │ └──── left shift key depressed\n│ │ │ │ │ └───── CTRL key depressed\n│ │ │ │ └────── ALT key depressed\n│ │ │ └─────── scroll-lock is active\n│ │ └──────── num-lock is active\n│ └───────── caps-lock is active\n└────────── insert is active"
+  },
+  {
+   "seg": "40",
+   "offset": "18",
+   "size": "byte",
+   "text": "Keyboard flag byte 1 (see KB FLAGS)\n│7│6│5│4│3│2│1│0│ keyboard flag byte\n│ │ │ │ │ │ │ └─── left CTRL key depressed\n│ │ │ │ │ │ └──── left ALT key depressed\n│ │ │ │ │ └───── system key depressed and held\n│ │ │ │ └────── suspend key has been toggled\n│ │ │ └─────── scroll lock key is depressed\n│ │ └──────── num-lock key is depressed\n│ └───────── caps-lock key is depressed\n└────────── insert key is depressed"
+  },
+  {
+   "seg": "40",
+   "offset": "19",
+   "size": "byte",
+   "text": "Storage for alternate keypad entry"
+  },
+  {
+   "seg": "40",
+   "offset": "1A",
+   "size": "word",
+   "text": "Offset from 40:00 to keyboard buffer head"
+  },
+  {
+   "seg": "40",
+   "offset": "1C",
+   "size": "word",
+   "text": "Offset from 40:00 to keyboard buffer tail"
+  },
+  {
+   "seg": "40",
+   "offset": "1E",
+   "size": "32bytes",
+   "text": "Keyboard buffer (circular queue buffer)"
+  },
+  {
+   "seg": "40",
+   "offset": "3E",
+   "size": "byte",
+   "text": "Drive recalibration status\n│7│6│5│4│3│2│1│0│ drive recalibration status\n│ │ │ │ │ │ │ └── 1=recalibrate drive 0\n│ │ │ │ │ │ └─── 1=recalibrate drive 1\n│ │ │ │ │ └──── 1=recalibrate drive 2\n│ │ │ │ └───── 1=recalibrate drive 3\n│ └─┴─┴────── unused\n└─────────── 1=working interrupt flag"
+  },
+  {
+   "seg": "40",
+   "offset": "3F",
+   "size": "byte",
+   "text": "Diskette motor status\n│7│6│5│4│3│2│1│0│ diskette motor status\n│ │ │ │ │ │ │ └── 1=drive 0 motor on\n│ │ │ │ │ │ └─── 1=drive 1 motor on\n│ │ │ │ │ └──── 1=drive 2 motor on\n│ │ │ │ └───── 1=drive 3 motor on\n│ └─┴─┴────── unused\n└─────────── 1=write operation"
+  },
+  {
+   "seg": "40",
+   "offset": "40",
+   "size": "byte",
+   "text": "Motor shutoff counter (decremented by INT 8)"
+  },
+  {
+   "seg": "40",
+   "offset": "41",
+   "size": "byte",
+   "text": "Status of last diskette operation (see INT 13,1)\n│7│6│5│4│3│2│1│0│ status of last diskette operation\n│ │ │ │ │ │ │ └─── invalid diskette command\n│ │ │ │ │ │ └──── diskette address mark not found\n│ │ │ │ │ └───── sector not found\n│ │ │ │ └────── diskette DMA error\n│ │ │ └─────── CRC check / data error\n│ │ └──────── diskette controller failure\n│ └───────── seek to track failed\n└────────── diskette time-out"
+  },
+  {
+   "seg": "40",
+   "offset": "42",
+   "size": "7 bytes",
+   "text": "NEC diskette controller status (see FDC)"
+  },
+  {
+   "seg": "40",
+   "offset": "49",
+   "size": "byte",
+   "text": "Current video mode  (see VIDEO MODE)"
+  },
+  {
+   "seg": "40",
+   "offset": "4A",
+   "size": "word",
+   "text": "Number of screen columns"
+  },
+  {
+   "seg": "40",
+   "offset": "4C",
+   "size": "word",
+   "text": "Size of current video regen buffer in bytes"
+  },
+  {
+   "seg": "40",
+   "offset": "4E",
+   "size": "word",
+   "text": "Offset of current video page in video regen buffer"
+  },
+  {
+   "seg": "40",
+   "offset": "50",
+   "size": "8 words",
+   "text": "Cursor position of pages 1-8, high order byte=row\nlow order byte=column; changing this data isn't\nreflected immediately on the display"
+  },
+  {
+   "seg": "40",
+   "offset": "60",
+   "size": "byte",
+   "text": "Cursor ending (bottom) scan line (don't modify)"
+  },
+  {
+   "seg": "40",
+   "offset": "61",
+   "size": "byte",
+   "text": "Cursor starting (top) scan line (don't modify)"
+  },
+  {
+   "seg": "40",
+   "offset": "62",
+   "size": "byte",
+   "text": "Active display page number"
+  },
+  {
+   "seg": "40",
+   "offset": "63",
+   "size": "word",
+   "text": "Base port address for active 6845 CRT controller\n3B4h = mono, 3D4h = color"
+  },
+  {
+   "seg": "40",
+   "offset": "65",
+   "size": "byte",
+   "text": "6845 CRT mode control register value (port 3x8h)\nEGA/VGA values emulate those of the MDA/CGA"
+  },
+  {
+   "seg": "40",
+   "offset": "66",
+   "size": "byte",
+   "text": "CGA current color palette mask setting (port 3d9h)\nEGA and VGA values emulate the CGA"
+  },
+  {
+   "seg": "40",
+   "offset": "67",
+   "size": "dword",
+   "text": "CS:IP for 286 return from protected mode\ndword\tTemp storage for SS:SP during shutdown\ndword\tDay counter on all products after AT\ndword\tPS/2 Pointer to reset code with memory preserved\n5 bytes\tCassette tape control (before AT)"
+  },
+  {
+   "seg": "40",
+   "offset": "6C",
+   "size": "dword",
+   "text": "Daily timer counter, equal to zero at midnight;\nincremented by INT 8; read/set by INT 1A"
+  },
+  {
+   "seg": "40",
+   "offset": "70",
+   "size": "byte",
+   "text": "Clock rollover flag, set when 40:6C exceeds 24hrs"
+  },
+  {
+   "seg": "40",
+   "offset": "71",
+   "size": "byte",
+   "text": "BIOS break flag, bit 7 is set if Ctrl-Break was\n*ever* hit; set by INT 9"
+  },
+  {
+   "seg": "40",
+   "offset": "72",
+   "size": "word",
+   "text": "Soft reset flag via Ctl-Alt-Del or JMP FFFF:0\n1234h  Bypass memory tests & CRT initialization\n4321h  Preserve memory\n5678h  System suspend\n9ABCh  Manufacturer test\nABCDh  Convertible POST loop\n????h  many other values are used during POST"
+  },
+  {
+   "seg": "40",
+   "offset": "74",
+   "size": "byte",
+   "text": "Status of last hard disk operation (see INT 13,1)"
+  },
+  {
+   "seg": "40",
+   "offset": "75",
+   "size": "byte",
+   "text": "Number of hard disks attached"
+  },
+  {
+   "seg": "40",
+   "offset": "76",
+   "size": "byte",
+   "text": "XT fixed disk drive control byte"
+  },
+  {
+   "seg": "40",
+   "offset": "77",
+   "size": "byte",
+   "text": "Port offset to current fixed disk adapter"
+  },
+  {
+   "seg": "40",
+   "offset": "78",
+   "size": "4 bytes",
+   "text": "Time-Out value for LPT1,LPT2,LPT3(,LPT4 except PS/2)"
+  },
+  {
+   "seg": "40",
+   "offset": "7C",
+   "size": "4 bytes",
+   "text": "Time-Out value for COM1,COM2,COM3,COM4"
+  },
+  {
+   "seg": "40",
+   "offset": "80",
+   "size": "word",
+   "text": "Keyboard buffer start offset (seg=40h,BIOS 10-27-82)"
+  },
+  {
+   "seg": "40",
+   "offset": "82",
+   "size": "word",
+   "text": "Keyboard buffer end offset (seg=40h,BIOS 10-27-82)"
+  },
+  {
+   "seg": "40",
+   "offset": "84",
+   "size": "byte",
+   "text": "Rows on the screen (less 1, EGA+)"
+  },
+  {
+   "seg": "40",
+   "offset": "85",
+   "size": "word",
+   "text": "Point height of character matrix (EGA+)\nbyte\tPCjr: character to be repeated if the typematic\nrepeat key takes effect"
+  },
+  {
+   "seg": "40",
+   "offset": "86",
+   "size": "byte",
+   "text": "PCjr: initial delay before repeat key action begins"
+  },
+  {
+   "seg": "40",
+   "offset": "87",
+   "size": "byte",
+   "text": "PCjr: current Fn function key number\nbyte\tVideo mode options (EGA+)\n│7│6│5│4│3│2│1│0│ Video mode options (EGA+)\n│ │ │ │ │ │ │ └── 1=alphanumeric cursor emulation enabled\n│ │ │ │ │ │ └─── 1=video subsystem attached to monochrome\n│ │ │ │ │ └──── reserved\n│ │ │ │ └───── 1=video subsystem is inactive\n│ │ │ └────── reserved\n│ └─┴─────── video RAM  00-64K  10-192K  01-128K  11-256K\n└────────── video mode number passed to INT 10, function 0"
+  },
+  {
+   "seg": "40",
+   "offset": "88",
+   "size": "byte",
+   "text": "PCjr: third keyboard status byte\nEGA feature bit switches, emulated on VGA\n│7│6│5│4│3│2│1│0│ EGA feature bit switches (EGA+)\n│ │ │ │ │ │ │ └── EGA SW1 config (1=off)\n│ │ │ │ │ │ └─── EGA SW2 config (1=off)\n│ │ │ │ │ └──── EGA SW3 config (1=off)\n│ │ │ │ └───── EGA SW4 config (1=off)\n│ │ │ └────── Input FEAT0 (ISR0 bit 5) after output on FCR0\n│ │ └─────── Input FEAT0 (ISR0 bit 6) after output on FCR0\n│ └──────── Input FEAT1 (ISR0 bit 5) after output on FCR1\n└───────── Input FEAT1 (ISR0 bit 6) after output on FCR1"
+  },
+  {
+   "seg": "40",
+   "offset": "89",
+   "size": "byte",
+   "text": "Video display data area (MCGA and VGA)\n│7│6│5│4│3│2│1│0│ Video display data area (MCGA and VGA)\n│ │ │ │ │ │ │ └── 1=VGA is active\n│ │ │ │ │ │ └─── 1=gray scale is enabled\n│ │ │ │ │ └──── 1=using monochrome monitor\n│ │ │ │ └───── 1=default palette loading is disabled\n│ │ │ └────── see table below\n│ │ └─────── reserved\n│ └────────  1=display switching enabled\n└───────── alphanumeric scan lines (see table below)\n0\t0\t350 line mode\n0\t1\t400 line mode\n1\t0\t200 line mode\n1\t1\treserved"
+  },
+  {
+   "seg": "40",
+   "offset": "8A",
+   "size": "byte",
+   "text": "Display Combination Code (DCC) table index (EGA+)"
+  },
+  {
+   "seg": "40",
+   "offset": "8B",
+   "size": "byte",
+   "text": "Last diskette data rate selected\n│7│6│5│4│3│2│1│0│ last diskette data rate selected\n│ │ │ │ └─┴─┴─┴─── reserved\n│ │ └─┴────────── last floppy drive step rate selected\n└─┴──────────── last floppy data rate selected\n00  500K bps\t\t00  step rate time of 0C\n01  300K bps\t\t01  step rate time of 0D\n10  250K bps\t\t10  step rate time of 0A\n11  reserved\t\t11  reserved"
+  },
+  {
+   "seg": "40",
+   "offset": "8C",
+   "size": "byte",
+   "text": "Hard disk status returned by controller"
+  },
+  {
+   "seg": "40",
+   "offset": "8D",
+   "size": "byte",
+   "text": "Hard disk error returned by controller"
+  },
+  {
+   "seg": "40",
+   "offset": "8E",
+   "size": "byte",
+   "text": "Hard disk interrupt control flag(bit 7=working int)"
+  },
+  {
+   "seg": "40",
+   "offset": "8F",
+   "size": "byte",
+   "text": "Combination hard/floppy disk card when bit 0 set"
+  },
+  {
+   "seg": "40",
+   "offset": "90",
+   "size": "4 bytes",
+   "text": "Drive 0,1,2,3 media state\n│7│6│5│4│3│2│1│0│ drive media state (4 copies)\n│ │ │ │ │ └─┴─┴─── drive/media state (see below)\n│ │ │ │ └─────── reserved\n│ │ │ └─────── 1=media/drive established\n│ │ └─────── double stepping required\n└─┴─────── data rate:\t00=500K bps    01=300K bps\n10=250K bps    11=reserved\n000  360Kb diskette/360Kb drive not established\n001  360Kb diskette/1.2Mb drive not established\n010  1.2Mb diskette/1.2Mb drive not established\n011  360Kb diskette/360Kb drive established\n100  360Kb diskette/1.2Mb drive established\n101  1.2Mb diskette/1.2Mb drive established\n110  Reserved\n111  None of the above"
+  },
+  {
+   "seg": "40",
+   "offset": "94",
+   "size": "byte",
+   "text": "Track currently seeked to on drive 0"
+  },
+  {
+   "seg": "40",
+   "offset": "95",
+   "size": "byte",
+   "text": "Track currently seeked to on drive 1"
+  },
+  {
+   "seg": "40",
+   "offset": "96",
+   "size": "byte",
+   "text": "Keyboard mode/type\n│7│6│5│4│3│2│1│0│ Keyboard mode/type\n│ │ │ │ │ │ │ └─── last code was the E1 hidden code\n│ │ │ │ │ │ └──── last code was the E0 hidden code\n│ │ │ │ │ └───── right CTRL key depressed\n│ │ │ │ └────── right ALT key depressed\n│ │ │ └─────── 101/102 enhanced keyboard installed\n│ │ └──────── force num-lock if Rd ID & KBX\n│ └───────── last char was first ID char\n└────────── read ID in process"
+  },
+  {
+   "seg": "40",
+   "offset": "97",
+   "size": "byte",
+   "text": "Keyboard LED flags\n│7│6│5│4│3│2│1│0│ Keyboard LED flags\n│ │ │ │ │ │ │ └─── scroll lock indicator\n│ │ │ │ │ │ └──── num-lock indicator\n│ │ │ │ │ └───── caps-lock indicator\n│ │ │ │ └────── circus system indicator\n│ │ │ └─────── ACK received\n│ │ └──────── re-send received flag\n│ └───────── mode indicator update\n└────────── keyboard transmit error flag"
+  },
+  {
+   "seg": "40",
+   "offset": "98",
+   "size": "dword",
+   "text": "Pointer to user wait complete flag"
+  },
+  {
+   "seg": "40",
+   "offset": "9C",
+   "size": "dword",
+   "text": "User wait Time-Out value in microseconds"
+  },
+  {
+   "seg": "40",
+   "offset": "A0",
+   "size": "byte",
+   "text": "RTC wait function flag\n│7│6│5│4│3│2│1│0│ INT 15,86 RTC wait function flag\n│ │ │ │ │ │ │ └─── 1= wait pending\n│ └─┴─┴─┴─┴─┴──── not used\n└─────────────── 1=INT 15,86 wait time elapsed"
+  },
+  {
+   "seg": "40",
+   "offset": "A1",
+   "size": "byte",
+   "text": "LANA DMA channel flags"
+  },
+  {
+   "seg": "40",
+   "offset": "A2",
+   "size": "2 bytes",
+   "text": "Status of LANA 0,1"
+  },
+  {
+   "seg": "40",
+   "offset": "A4",
+   "size": "dword",
+   "text": "Saved hard disk interrupt vector"
+  },
+  {
+   "seg": "40",
+   "offset": "A8",
+   "size": "dword",
+   "text": "BIOS Video Save/Override Pointer Table address\n0 - enable underlining in monochrome alpha modes\n-1 - disable underlining in all alpha modes"
+  },
+  {
+   "seg": "40",
+   "offset": "AC",
+   "size": "8 bytes",
+   "text": "Reserved"
+  },
+  {
+   "seg": "40",
+   "offset": "B4",
+   "size": "byte",
+   "text": "Keyboard NMI control flags (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "B5",
+   "size": "dword",
+   "text": "Keyboard break pending flags (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "B9",
+   "size": "byte",
+   "text": "Port 60 single byte queue (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "BA",
+   "size": "byte",
+   "text": "Scan code of last key (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "BB",
+   "size": "byte",
+   "text": "NMI buffer head pointer (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "BC",
+   "size": "byte",
+   "text": "NMI buffer tail pointer (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "BD",
+   "size": "16bytes",
+   "text": "NMI scan code buffer (convertible)"
+  },
+  {
+   "seg": "40",
+   "offset": "CE",
+   "size": "word",
+   "text": "Day counter (convertible and after)"
+  },
+  {
+   "seg": "40",
+   "offset": "F0",
+   "size": "16bytes",
+   "text": "Intra-Applications Communications Area (IBM Technical\nReference incorrectly locates this at 50:F0-50:FF)"
+  },
+  {
+   "seg": "50",
+   "offset": "00",
+   "size": "byte",
+   "text": "Print screen status byte\n00 = PrtSc not active,\n01 = PrtSc in progress\nFF = error"
+  },
+  {
+   "seg": "50",
+   "offset": "01",
+   "size": "3 bytes",
+   "text": "Used by BASIC"
+  },
+  {
+   "seg": "50",
+   "offset": "04",
+   "size": "byte",
+   "text": "DOS single diskette mode flag, 0=A:, 1=B:"
+  },
+  {
+   "seg": "50",
+   "offset": "05",
+   "size": "10bytes",
+   "text": "POST work area"
+  },
+  {
+   "seg": "50",
+   "offset": "0F",
+   "size": "byte",
+   "text": "BASIC shell flag; set to 2 if current shell"
+  },
+  {
+   "seg": "50",
+   "offset": "10",
+   "size": "word",
+   "text": "BASICs default DS value (DEF SEG)"
+  },
+  {
+   "seg": "50",
+   "offset": "12",
+   "size": "dword",
+   "text": "Pointer to BASIC INT 1C interrupt handler"
+  },
+  {
+   "seg": "50",
+   "offset": "16",
+   "size": "dword",
+   "text": "Pointer to BASIC INT 23 interrupt handler"
+  },
+  {
+   "seg": "50",
+   "offset": "1A",
+   "size": "dword",
+   "text": "Pointer to BASIC INT 24 disk error handler"
+  },
+  {
+   "seg": "50",
+   "offset": "20",
+   "size": "word",
+   "text": "DOS dynamic storage"
+  },
+  {
+   "seg": "50",
+   "offset": "22",
+   "size": "14bytes",
+   "text": "DOS diskette initialization table (INT 1E)"
+  },
+  {
+   "seg": "50",
+   "offset": "30",
+   "size": "4bytes",
+   "text": "MODE command\n128K\tPS/2 System ROM (thru F000)\nPCjr: software cartridge override address"
+  }
+ ],
+ "psp": [
+  {
+   "offset": "00",
+   "size": "word",
+   "text": "machine code INT 20 instruction (CDh 20h)"
+  },
+  {
+   "offset": "02",
+   "size": "word",
+   "text": "top of memory in segment (paragraph) form"
+  },
+  {
+   "offset": "04",
+   "size": "byte",
+   "text": "reserved for DOS, usually 0"
+  },
+  {
+   "offset": "05",
+   "size": "5bytes",
+   "text": "machine code instruction long call to the DOS\nfunction dispatcher (obsolete CP/M)"
+  },
+  {
+   "offset": "06",
+   "size": "word",
+   "text": ".COM programs bytes available in segment (CP/M)"
+  },
+  {
+   "offset": "0A",
+   "size": "dword",
+   "text": "INT 22 terminate address;  DOS loader jumps to this\naddress upon exit;  the EXEC function forces a child\nprocess to return to the parent by setting this\nvector to code within the parent (IP,CS)"
+  },
+  {
+   "offset": "0E",
+   "size": "dword",
+   "text": "INT 23 Ctrl-Break exit address; the original INT 23\nvector is NOT restored from this pointer (IP,CS)"
+  },
+  {
+   "offset": "12",
+   "size": "dword",
+   "text": "INT 24 critical error exit address; the original\nINT 24 vector is NOT restored from this field (IP,CS)"
+  },
+  {
+   "offset": "16",
+   "size": "word",
+   "text": "parent process segment addr (Undoc. DOS 2.x+)\nCOMMAND.COM has a parent id of zero, or its own PSP"
+  },
+  {
+   "offset": "18",
+   "size": "20bytes",
+   "text": "file handle array (Undocumented DOS 2.x+); if handle\narray element is FF then handle is available.  Network\nredirectors often indicate remotes files by setting\nthese to values between 80-FE."
+  },
+  {
+   "offset": "2C",
+   "size": "word",
+   "text": "segment address of the environment, or zero (DOS 2.x+)"
+  },
+  {
+   "offset": "2E",
+   "size": "dword",
+   "text": "SS:SP on entry to last INT 21 function (Undoc. 2.x+) ╪"
+  },
+  {
+   "offset": "32",
+   "size": "word",
+   "text": "handle array size (Undocumented DOS 3.x+)"
+  },
+  {
+   "offset": "34",
+   "size": "dword",
+   "text": "handle array pointer (Undocumented DOS 3.x+)"
+  },
+  {
+   "offset": "38",
+   "size": "dword",
+   "text": "pointer to previous PSP (deflt FFFF:FFFF, Undoc 3.x+) ╪"
+  },
+  {
+   "offset": "3C",
+   "size": "20bytes",
+   "text": "unused in DOS before 4.01  ╪"
+  },
+  {
+   "offset": "50",
+   "size": "3bytes",
+   "text": "DOS function dispatcher CDh 21h CBh (Undoc. 3.x+) ╪"
+  },
+  {
+   "offset": "53",
+   "size": "9bytes",
+   "text": "unused"
+  },
+  {
+   "offset": "5C",
+   "size": "36bytes",
+   "text": "default unopened FCB #1 (parts overlayed by FCB #2)"
+  },
+  {
+   "offset": "6C",
+   "size": "20bytes",
+   "text": "default unopened FCB #2 (overlays part of FCB #1)"
+  },
+  {
+   "offset": "80",
+   "size": "byte",
+   "text": "count of characters in command tail;  all bytes\nfollowing command name;  also default DTA (128 bytes)"
+  },
+  {
+   "offset": "81",
+   "size": "127bytes",
+   "text": "all characters entered after the program name followed\nby a CR byte"
+  }
+ ],
+ "ports": {
+  "singles": [
+   {
+    "port": 0,
+    "text": "Channel 0 address register"
+   },
+   {
+    "port": 1,
+    "text": "Channel 0 word count"
+   },
+   {
+    "port": 2,
+    "text": "Channel 1 address register"
+   },
+   {
+    "port": 3,
+    "text": "Channel 1 word count"
+   },
+   {
+    "port": 4,
+    "text": "Channel 2 address register"
+   },
+   {
+    "port": 5,
+    "text": "Channel 2 word count"
+   },
+   {
+    "port": 6,
+    "text": "Channel 3 address register"
+   },
+   {
+    "port": 7,
+    "text": "Channel 3 word count"
+   },
+   {
+    "port": 8,
+    "text": "Status/command register"
+   },
+   {
+    "port": 9,
+    "text": "Request register"
+   },
+   {
+    "port": 10,
+    "text": "Mask register"
+   },
+   {
+    "port": 11,
+    "text": "Mode register"
+   },
+   {
+    "port": 12,
+    "text": "Clear MSB/LSB flip flop"
+   },
+   {
+    "port": 13,
+    "text": "Master clear temp register"
+   },
+   {
+    "port": 14,
+    "text": "Clear mask register"
+   },
+   {
+    "port": 15,
+    "text": "Multiple mask register"
+   },
+   {
+    "port": 32,
+    "text": "8259 Command port  (see 8259)"
+   },
+   {
+    "port": 33,
+    "text": "8259 Interrupt mask register  (see 8259)"
+   },
+   {
+    "port": 64,
+    "text": "8253 channel 0, counter divisor"
+   },
+   {
+    "port": 65,
+    "text": "8253 channel 1, RAM refresh counter"
+   },
+   {
+    "port": 66,
+    "text": "8253 channel 2, Cassette and speaker functions"
+   },
+   {
+    "port": 67,
+    "text": "8253 mode control  (see 8253)"
+   },
+   {
+    "port": 68,
+    "text": "8254 PS/2 extended timer"
+   },
+   {
+    "port": 71,
+    "text": "8254 Channel 3 control byte"
+   },
+   {
+    "port": 96,
+    "text": "8255 Port A keyboard input/output buffer (output PCjr)"
+   },
+   {
+    "port": 97,
+    "text": "8255 Port B output"
+   },
+   {
+    "port": 98,
+    "text": "8255 Port C input"
+   },
+   {
+    "port": 99,
+    "text": "8255 Command/Mode control register"
+   },
+   {
+    "port": 96,
+    "text": "8042 Keyboard input/output buffer register"
+   },
+   {
+    "port": 97,
+    "text": "8042 system control port (for compatability with 8255)"
+   },
+   {
+    "port": 100,
+    "text": "8042 Keyboard command/status register"
+   },
+   {
+    "port": 112,
+    "text": "CMOS RAM/RTC, also NMI enable/disable (AT,PS/2, see RTC)"
+   },
+   {
+    "port": 113,
+    "text": "CMOS RAM data  (AT,PS/2)"
+   },
+   {
+    "port": 128,
+    "text": "Manufacturer systems checkpoint port (used during POST)"
+   },
+   {
+    "port": 129,
+    "text": "High order 4 bits of DMA channel 2 address"
+   },
+   {
+    "port": 130,
+    "text": "High order 4 bits of DMA channel 3 address"
+   },
+   {
+    "port": 131,
+    "text": "High order 4 bits of DMA channel 1 address"
+   },
+   {
+    "port": 144,
+    "text": "Central arbitration control Port"
+   },
+   {
+    "port": 145,
+    "text": "Card selection feedback"
+   },
+   {
+    "port": 146,
+    "text": "System control and status register"
+   },
+   {
+    "port": 148,
+    "text": "System board enable/setup register"
+   },
+   {
+    "port": 149,
+    "text": "Reserved"
+   },
+   {
+    "port": 150,
+    "text": "Adapter enable/setup register"
+   },
+   {
+    "port": 151,
+    "text": "Reserved"
+   },
+   {
+    "port": 160,
+    "text": "NMI Mask Register (PC,XT) (write 80h to enable NMI, 00h disable)"
+   },
+   {
+    "port": 160,
+    "text": "Second 8259 Command port  (see 8259)"
+   },
+   {
+    "port": 161,
+    "text": "Second 8259 Interrupt mask register  (see 8259)"
+   },
+   {
+    "port": 192,
+    "text": "TI SN76496 Programmable Tone/Noise Generator (PCjr)"
+   },
+   {
+    "port": 194,
+    "text": "DMA channel 3 selector  (see ports 6 & 82)"
+   },
+   {
+    "port": 240,
+    "text": "Disk Controller"
+   },
+   {
+    "port": 242,
+    "text": "Disk Controller control port"
+   },
+   {
+    "port": 244,
+    "text": "Disk Controller status register"
+   },
+   {
+    "port": 245,
+    "text": "Disk Controller data port"
+   },
+   {
+    "port": 256,
+    "text": "POS Register 0, Adapter ID byte (LSB)"
+   },
+   {
+    "port": 257,
+    "text": "POS Register 1, Adapter ID byte (MSB)"
+   },
+   {
+    "port": 258,
+    "text": "POS Register 2, Option select data byte 1"
+   },
+   {
+    "port": 259,
+    "text": "POS Register 3, Option select data byte 2"
+   },
+   {
+    "port": 260,
+    "text": "POS Register 4, Option select data byte 3"
+   },
+   {
+    "port": 261,
+    "text": "POS Register 5, Option select data byte 4"
+   },
+   {
+    "port": 262,
+    "text": "POS Register 6, subaddress extension (LSB)"
+   },
+   {
+    "port": 263,
+    "text": "POS Register 7, subaddress extension (MSB)"
+   },
+   {
+    "port": 368,
+    "text": "disk 1 data"
+   },
+   {
+    "port": 369,
+    "text": "disk 1 error"
+   },
+   {
+    "port": 370,
+    "text": "disk 1 sector count"
+   },
+   {
+    "port": 371,
+    "text": "disk 1 sector number"
+   },
+   {
+    "port": 372,
+    "text": "disk 1 cylinder low"
+   },
+   {
+    "port": 373,
+    "text": "disk 1 cylinder high"
+   },
+   {
+    "port": 374,
+    "text": "disk 1 drive/head"
+   },
+   {
+    "port": 375,
+    "text": "disk 1 status"
+   },
+   {
+    "port": 496,
+    "text": "disk 0 data"
+   },
+   {
+    "port": 497,
+    "text": "disk 0 error"
+   },
+   {
+    "port": 498,
+    "text": "disk 0 sector count"
+   },
+   {
+    "port": 499,
+    "text": "disk 0 sector number"
+   },
+   {
+    "port": 500,
+    "text": "disk 0 cylinder low"
+   },
+   {
+    "port": 501,
+    "text": "disk 0 cylinder high"
+   },
+   {
+    "port": 502,
+    "text": "disk 0 drive/head"
+   },
+   {
+    "port": 503,
+    "text": "disk 0 status"
+   },
+   {
+    "port": 528,
+    "text": "Write: latch expansion bus data"
+   },
+   {
+    "port": 529,
+    "text": "Write: clear wait,test latch"
+   },
+   {
+    "port": 530,
+    "text": "Read:  LSB of data address"
+   },
+   {
+    "port": 531,
+    "text": "Write: 0=enable, 1=/disable expansion unit"
+   },
+   {
+    "port": 532,
+    "text": "write: latch data, read: data"
+   },
+   {
+    "port": 533,
+    "text": "read:  MSB of address, next read: LSB of address"
+   },
+   {
+    "port": 543,
+    "text": "Reserved"
+   },
+   {
+    "port": 632,
+    "text": "data port"
+   },
+   {
+    "port": 633,
+    "text": "status port"
+   },
+   {
+    "port": 634,
+    "text": "control port"
+   },
+   {
+    "port": 736,
+    "text": "Alternate EGA/VGA"
+   },
+   {
+    "port": 737,
+    "text": "GPIB Adapter  (AT)"
+   },
+   {
+    "port": 800,
+    "text": "Read from/Write to controller"
+   },
+   {
+    "port": 801,
+    "text": "Read: Controller Status, Write: controller reset"
+   },
+   {
+    "port": 802,
+    "text": "Write: generate controller select pulse"
+   },
+   {
+    "port": 803,
+    "text": "Write: Pattern to DMA and interrupt mask register"
+   },
+   {
+    "port": 804,
+    "text": "disk attention/status"
+   },
+   {
+    "port": 882,
+    "text": "Diskette digital output"
+   },
+   {
+    "port": 884,
+    "text": "Diskette controller status"
+   },
+   {
+    "port": 885,
+    "text": "Diskette controller data"
+   },
+   {
+    "port": 886,
+    "text": "Diskette controller data"
+   },
+   {
+    "port": 887,
+    "text": "Diskette digital input"
+   },
+   {
+    "port": 888,
+    "text": "data port"
+   },
+   {
+    "port": 889,
+    "text": "status port"
+   },
+   {
+    "port": 890,
+    "text": "control port"
+   },
+   {
+    "port": 896,
+    "text": "On board 8255 port A, internal/external sense"
+   },
+   {
+    "port": 897,
+    "text": "On board 8255 port B, external modem interface"
+   },
+   {
+    "port": 898,
+    "text": "On board 8255 port C, internal control and gating"
+   },
+   {
+    "port": 899,
+    "text": "On board 8255 mode register"
+   },
+   {
+    "port": 900,
+    "text": "On board 8253 channel square wave generator"
+   },
+   {
+    "port": 901,
+    "text": "On board 8253 channel 1 inactivity time-out"
+   },
+   {
+    "port": 902,
+    "text": "On board 8253 channel 2 inactivity time-out"
+   },
+   {
+    "port": 903,
+    "text": "On board 8253 mode register"
+   },
+   {
+    "port": 904,
+    "text": "On board 8273 read: status; Write: Command"
+   },
+   {
+    "port": 905,
+    "text": "On board 8273 write: parameter; read: response"
+   },
+   {
+    "port": 906,
+    "text": "On board 8273 transmit interrupt status"
+   },
+   {
+    "port": 907,
+    "text": "On board 8273 receiver interrupt status"
+   },
+   {
+    "port": 908,
+    "text": "On board 8273 data"
+   },
+   {
+    "port": 928,
+    "text": "On board 8255 port A, internal/external sense"
+   },
+   {
+    "port": 929,
+    "text": "On board 8255 port B, external modem interface"
+   },
+   {
+    "port": 930,
+    "text": "On board 8255 port C, internal control and gating"
+   },
+   {
+    "port": 931,
+    "text": "On board 8255 mode register"
+   },
+   {
+    "port": 932,
+    "text": "On board 8253 counter 0 unused"
+   },
+   {
+    "port": 933,
+    "text": "On board 8253 counter 1 inactivity time-outs"
+   },
+   {
+    "port": 934,
+    "text": "On board 8253 counter 2 inactivity time-outs"
+   },
+   {
+    "port": 935,
+    "text": "On board 8253 mode register"
+   },
+   {
+    "port": 936,
+    "text": "On board 8251 data"
+   },
+   {
+    "port": 937,
+    "text": "On board 8251 command/mode/status register"
+   },
+   {
+    "port": 944,
+    "text": "port address decodes to 3B4"
+   },
+   {
+    "port": 945,
+    "text": "port address decodes to 3B5"
+   },
+   {
+    "port": 946,
+    "text": "port address decodes to 3B4"
+   },
+   {
+    "port": 947,
+    "text": "port address decodes to 3B5"
+   },
+   {
+    "port": 948,
+    "text": "6845 index register, selects which register [0-11h]"
+   },
+   {
+    "port": 949,
+    "text": "6845 data register [0-11h] selected by port 3B4,"
+   },
+   {
+    "port": 950,
+    "text": "port address decodes to 3B4"
+   },
+   {
+    "port": 951,
+    "text": "port address decodes to 3B5"
+   },
+   {
+    "port": 952,
+    "text": "6845 Mode control register"
+   },
+   {
+    "port": 953,
+    "text": "reserved for color select register on color adapter"
+   },
+   {
+    "port": 954,
+    "text": "status register (read only)"
+   },
+   {
+    "port": 955,
+    "text": "reserved for light pen strobe reset"
+   },
+   {
+    "port": 956,
+    "text": "parallel 1, data port"
+   },
+   {
+    "port": 957,
+    "text": "parallel 1, status port"
+   },
+   {
+    "port": 958,
+    "text": "parallel 1, control port"
+   },
+   {
+    "port": 960,
+    "text": "VGA attribute and sequencer register"
+   },
+   {
+    "port": 961,
+    "text": "Other video attributes"
+   },
+   {
+    "port": 962,
+    "text": "EGA, VGA, CGA input status 0"
+   },
+   {
+    "port": 963,
+    "text": "Video subsystem enable"
+   },
+   {
+    "port": 964,
+    "text": "CGA, EGA, VGA sequencer index"
+   },
+   {
+    "port": 965,
+    "text": "CGA, EGA, VGA sequencer"
+   },
+   {
+    "port": 966,
+    "text": "VGA video DAC PEL mask"
+   },
+   {
+    "port": 967,
+    "text": "VGA video DAC state"
+   },
+   {
+    "port": 968,
+    "text": "VGA video DAC PEL address"
+   },
+   {
+    "port": 969,
+    "text": "VGA video DAC"
+   },
+   {
+    "port": 970,
+    "text": "VGA graphics 2 position"
+   },
+   {
+    "port": 972,
+    "text": "VGA graphics 1 position"
+   },
+   {
+    "port": 973,
+    "text": "VGA feature control"
+   },
+   {
+    "port": 974,
+    "text": "VGA graphics index"
+   },
+   {
+    "port": 975,
+    "text": "Other VGA graphics"
+   },
+   {
+    "port": 976,
+    "text": "port address decodes to 3D4"
+   },
+   {
+    "port": 977,
+    "text": "port address decodes to 3D5"
+   },
+   {
+    "port": 978,
+    "text": "port address decodes to 3D4"
+   },
+   {
+    "port": 979,
+    "text": "port address decodes to 3D5"
+   },
+   {
+    "port": 980,
+    "text": "6845 index register, selects which register [0-11h]"
+   },
+   {
+    "port": 981,
+    "text": "6845 data register [0-11h] selected by port 3D4,"
+   },
+   {
+    "port": 982,
+    "text": "port address decodes to 3D4"
+   },
+   {
+    "port": 983,
+    "text": "port address decodes to 3D5"
+   },
+   {
+    "port": 984,
+    "text": "6845 Mode control register (CGA, EGA, VGA, except PCjr)"
+   },
+   {
+    "port": 985,
+    "text": "color select palette register (CGA, EGA, VGA, see 6845)"
+   },
+   {
+    "port": 986,
+    "text": "status register (read only, see 6845, PCjr VGA access)"
+   },
+   {
+    "port": 987,
+    "text": "Clear light pen latch (any write)"
+   },
+   {
+    "port": 988,
+    "text": "Preset Light pen latch"
+   },
+   {
+    "port": 991,
+    "text": "CRT/CPU page register (PCjr only)"
+   },
+   {
+    "port": 1008,
+    "text": "Diskette controller status A"
+   },
+   {
+    "port": 1009,
+    "text": "Diskette controller status B"
+   },
+   {
+    "port": 1010,
+    "text": "controller control port"
+   },
+   {
+    "port": 1012,
+    "text": "controller status register"
+   },
+   {
+    "port": 1013,
+    "text": "data register (write 1-9 byte command, see INT 13)"
+   },
+   {
+    "port": 1014,
+    "text": "Diskette controller data"
+   },
+   {
+    "port": 1015,
+    "text": "Diskette digital input"
+   }
+  ],
+  "ranges": [
+   {
+    "start": 0,
+    "end": 15,
+    "text": "8237 DMA controller"
+   },
+   {
+    "start": 16,
+    "end": 31,
+    "text": "8237 DMA Controller (PS/2 model 60 & 80), reserved (AT)"
+   },
+   {
+    "start": 32,
+    "end": 47,
+    "text": "8259A Master Programmable Interrupt Controller"
+   },
+   {
+    "start": 48,
+    "end": 63,
+    "text": "8259A Slave Programmable Interrupt Controller (AT,PS/2)"
+   },
+   {
+    "start": 64,
+    "end": 95,
+    "text": "8253 or 8254 Programmable Interval Timer (PIT, see 8253)"
+   },
+   {
+    "start": 96,
+    "end": 103,
+    "text": "8255 Programmable Peripheral Interface  (PC,XT, PCjr)"
+   },
+   {
+    "start": 96,
+    "end": 111,
+    "text": "8042 Keyboard Controller  (AT,PS/2)"
+   },
+   {
+    "start": 128,
+    "end": 144,
+    "text": "DMA Page Registers"
+   },
+   {
+    "start": 144,
+    "end": 151,
+    "text": "POS/Programmable Option Select  (PS/2)"
+   },
+   {
+    "start": 160,
+    "end": 191,
+    "text": "Second 8259 Programmable Interrupt Controller (AT, PS/2)"
+   },
+   {
+    "start": 192,
+    "end": 223,
+    "text": "8237 DMA controller 2 (AT)"
+   },
+   {
+    "start": 224,
+    "end": 239,
+    "text": "Reserved"
+   },
+   {
+    "start": 240,
+    "end": 255,
+    "text": "Math coprocessor (AT, PS/2)"
+   },
+   {
+    "start": 240,
+    "end": 245,
+    "text": "PCjr Disk Controller"
+   },
+   {
+    "start": 248,
+    "end": 255,
+    "text": "Reserved for future microprocessor extensions"
+   },
+   {
+    "start": 256,
+    "end": 271,
+    "text": "POS Programmable Option Select (PS/2)"
+   },
+   {
+    "start": 272,
+    "end": 495,
+    "text": "System I/O channel"
+   },
+   {
+    "start": 368,
+    "end": 383,
+    "text": "Fixed disk 1 (AT)"
+   },
+   {
+    "start": 496,
+    "end": 511,
+    "text": "Fixed disk 0 (AT)"
+   },
+   {
+    "start": 512,
+    "end": 527,
+    "text": "Game Adapter (see GAME PORT or JOYSTICK)"
+   },
+   {
+    "start": 528,
+    "end": 535,
+    "text": "Expansion Card Ports (XT)"
+   },
+   {
+    "start": 532,
+    "end": 533,
+    "text": "Receiver Card Ports"
+   },
+   {
+    "start": 544,
+    "end": 623,
+    "text": "Reserved for I/O channel"
+   },
+   {
+    "start": 624,
+    "end": 639,
+    "text": "Third parallel port (see PARALLEL PORT)"
+   },
+   {
+    "start": 640,
+    "end": 687,
+    "text": "Reserved for I/O channel"
+   },
+   {
+    "start": 674,
+    "end": 675,
+    "text": "MSM58321RS clock"
+   },
+   {
+    "start": 688,
+    "end": 735,
+    "text": "Alternate EGA, or 3270 PC video (XT, AT)"
+   },
+   {
+    "start": 738,
+    "end": 739,
+    "text": "Data acquisition adapter (AT)"
+   },
+   {
+    "start": 744,
+    "end": 751,
+    "text": "COM4 non PS/2 UART (Reserved by IBM) (see UART)"
+   },
+   {
+    "start": 752,
+    "end": 759,
+    "text": "Reserved"
+   },
+   {
+    "start": 760,
+    "end": 767,
+    "text": "COM2 Second Asynchronous Adapter (see UART)"
+   },
+   {
+    "start": 768,
+    "end": 799,
+    "text": "Prototype Experimentation Card (except PCjr)"
+   },
+   {
+    "start": 800,
+    "end": 815,
+    "text": "Hard Disk Controller  (XT)"
+   },
+   {
+    "start": 816,
+    "end": 831,
+    "text": "Reserved for XT/370"
+   },
+   {
+    "start": 832,
+    "end": 863,
+    "text": "Reserved for I/O channel"
+   },
+   {
+    "start": 864,
+    "end": 879,
+    "text": "PC Network"
+   },
+   {
+    "start": 880,
+    "end": 887,
+    "text": "Floppy disk controller (except PCjr)"
+   },
+   {
+    "start": 888,
+    "end": 895,
+    "text": "Second Parallel Printer (see PARALLEL PORT)"
+   },
+   {
+    "start": 896,
+    "end": 911,
+    "text": "Secondary Binary Synchronous Data Link Control (SDLC) adapter"
+   },
+   {
+    "start": 912,
+    "end": 927,
+    "text": "Cluster Adapter"
+   },
+   {
+    "start": 928,
+    "end": 943,
+    "text": "Primary Binary Synchronous Data Link Control (SDLC) adapter"
+   },
+   {
+    "start": 944,
+    "end": 959,
+    "text": "Monochrome Display Adapter (write only, see 6845)"
+   },
+   {
+    "start": 956,
+    "end": 959,
+    "text": "Primary Parallel Printer Adapter (see PARALLEL PORT)"
+   },
+   {
+    "start": 960,
+    "end": 975,
+    "text": "EGA/VGA"
+   },
+   {
+    "start": 976,
+    "end": 991,
+    "text": "Color Graphics Monitor Adapter (ports 3D0-3DB are"
+   },
+   {
+    "start": 1000,
+    "end": 1007,
+    "text": "COM3 non PS/2 UART (Reserved by IBM) (see UART)"
+   },
+   {
+    "start": 1008,
+    "end": 1015,
+    "text": "Floppy disk controller (except PCjr)"
+   },
+   {
+    "start": 1016,
+    "end": 1023,
+    "text": "COM1 Primary Asynchronous Adapter  (see UART)"
+   },
+   {
+    "start": 12832,
+    "end": 12839,
+    "text": "PS/2 COM3 (see UART)"
+   },
+   {
+    "start": 12840,
+    "end": 12847,
+    "text": "PS/2 COM4 (see UART)"
+   },
+   {
+    "start": 16928,
+    "end": 16935,
+    "text": "PS/2 COM5 (see UART)"
+   },
+   {
+    "start": 16936,
+    "end": 16943,
+    "text": "PS/2 COM6 (see UART)"
+   },
+   {
+    "start": 21024,
+    "end": 21031,
+    "text": "PS/2 COM7 (see UART)"
+   },
+   {
+    "start": 21032,
+    "end": 21039,
+    "text": "PS/2 COM8 (see UART)"
+   }
+  ]
+ },
+ "videoModes": "Values for video mode:\n     text/ text pixel\tpixel\tcolors disply scrn  system\n     grph resol\t box  resolution       pages  addr\n 00h = T  40x25\t 8x8   320x200\t16gray\t  8   B800 CGA,PCjr,Tandy\n     = T  40x25\t 8x14  320x350\t16gray\t  8   B800 EGA\n     = T  40x25\t 8x16  320x400\t 16\t  8   B800 MCGA\n     = T  40x25\t 9x16  360x400\t 16\t  8   B800 VGA\n 01h = T  40x25\t 8x8   320x200\t 16\t  8   B800 CGA,PCjr,Tandy\n     = T  40x25\t 8x14  320x350\t 16\t  8   B800 EGA\n     = T  40x25\t 8x16  320x400\t 16\t  8   B800 MCGA\n     = T  40x25\t 9x16  360x400\t 16\t  8   B800 VGA\n 02h = T  80x25\t 8x8   640x200\t16gray\t  4   B800 CGA,PCjr,Tandy\n     = T  80x25\t 8x14  640x350\t16gray\t  8   B800 EGA\n     = T  80x25\t 8x16  640x400\t 16\t  8   B800 MCGA\n     = T  80x25\t 9x16  720x400\t 16\t  8   B800 VGA\n 03h = T  80x25\t 8x8   640x200\t 16\t  4   B800 CGA,PCjr,Tandy\n     = T  80x25\t 8x14  640x350\t 16/64\t  8   B800 EGA\n     = T  80x25\t 8x16  640x400\t 16\t  8   B800 MCGA\n     = T  80x25\t 9x16  720x400\t 16\t  8   B800 VGA\n     = T  80x43\t 8x8   640x350\t 16\t  4   B800 EGA,VGA [17]\n     = T  80x50\t 8x8   640x400\t 16\t  4   B800 VGA [17]\n 04h = G  40x25\t 8x8   320x200\t  4\t  .   B800 CGA,PCjr,EGA,MCGA,VGA\n 05h = G  40x25\t 8x8   320x200\t 4gray\t  .   B800 CGA,PCjr,EGA\n     = G  40x25\t 8x8   320x200\t  4\t  .   B800 MCGA,VGA\n 06h = G  80x25\t 8x8   640x200\t  2\t  .   B800 CGA,PCjr,EGA,MCGA,VGA\n     = G  80x25\t  .\t  .\tmono\t  .   B000 HERCULES.COM on HGC [14]\n 07h = T  80x25\t 9x14  720x350\tmono\t var  B000 MDA,Hercules,EGA\n     = T  80x25\t 9x16  720x400\tmono\t  .   B000 VGA\n 08h = T 132x25\t 8x8  1056x200\t 16\t  .   B800 ATI EGA/VGA Wonder [2]\n     = T 132x25\t 8x8  1056x200\tmono\t  .   B000 ATI EGA/VGA Wonder [2]\n     = G  20x25\t 8x8   160x200\t 16\t  .\t.  PCjr, Tandy 1000\n     = G  80x25\t 8x16  640x400\tcolor\t  .\t.  Tandy 2000\n     = G  90x43\t 8x8   720x348\tmono\t  .   B000 Hercules + MSHERC.COM\n     = G  90x45\t 8x8   720x360\tmono\t  .   B000 Hercules + HERKULES [11]\n     = G  90x29\t 8x12  720x348\tmono\t  .\t.  Hercules + HERCBIOS [15]\n 09h = G  40x25\t 8x8   320x200\t 16\t  .\t.  PCjr, Tandy 1000\n     = G  80x25\t 8x16  640x400\tmono\t  .\t.  Tandy 2000\n     = G  90x43\t 8x8   720x348\tmono\t  .\t.  Hercules + HERCBIOS [15]\n 0Ah = G  80x25\t 8x8   640x200\t  4\t  .\t.  PCjr, Tandy 1000\n 0Bh =\t reserved\t\t\t\t   (EGA BIOS internal use)\n     = G  80x25\t 8x8   640x200\t 16\t  .\t.  Tandy 1000 SL/TL [13]\n 0Ch =\t reserved\t\t\t\t   (EGA BIOS internal use)\n 0Dh = G  40x25\t 8x8   320x200\t 16\t  8   A000 EGA,VGA\n 0Eh = G  80x25\t 8x8   640x200\t 16\t  4   A000 EGA,VGA\n 0Fh = G  80x25\t 8x14  640x350\tmono\t  2   A000 EGA,VGA\n 10h = G  80x25\t 8x14  640x350\t  4\t  2   A000 64k EGA\n     = G    .\t  .    640x350\t 16\t  .   A000 256k EGA,VGA\n 11h = G  80x30\t 8x16  640x480\tmono\t  .   A000 VGA,MCGA,ATI EGA,ATI VIP\n 12h = G  80x30\t 8x16  640x480\t 16/256K  .   A000 VGA,ATI VIP\n     = G  80x30\t 8x16  640x480\t 16/64\t  .   A000 ATI EGA Wonder\n     = G    .\t  .    640x480\t 16\t  .\t.  UltraVision+256K EGA\n 13h = G  40x25\t 8x8   320x200\t256/256K  .   A000 VGA,MCGA,ATI VIP"
+}

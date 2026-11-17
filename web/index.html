@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reverser progress graph</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b1020'/%3E%3Crect x='3' y='3' width='4' height='4' fill='%2334d399'/%3E%3Crect x='9' y='3' width='4' height='4' fill='%2355ffff'/%3E%3Crect x='3' y='9' width='4' height='4' fill='%23fbbf24'/%3E%3Crect x='9' y='9' width='4' height='4' fill='%23ff55ff'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">
+      <span class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span class="title">reverser<b>·</b>progress<b>·</b>graph</span>
+    </a>
+    <nav class="tabs">
+      <a href="#/" data-tab="overview">Overview</a>
+      <a href="#/modules" data-tab="modules">Modules</a>
+      <a href="#/queue" data-tab="queue">Work queue</a>
+      <a href="#/compare" data-tab="compare" id="compare-tab" hidden>Compare</a>
+    </nav>
+    <form class="jump" id="jump" autocomplete="off">
+      <input id="jump-input" type="search" placeholder="Jump to module or address — MAIN_OVR-0020:1a2c, lcall 0x41, 0x25, 5cd:0634" spellcheck="false">
+    </form>
+    <span class="live" id="live" title="Polling for progress changes"><i></i><span>live</span></span>
+  </header>
+  <main id="app" aria-live="polite"></main>
+  <footer class="foot" id="foot"></footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

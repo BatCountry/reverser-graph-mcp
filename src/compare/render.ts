@@ -1,5 +1,6 @@
 import { programName, type Correspondence, type Match, type PairDetail, type ProgramPair, type Which } from "./correspond.js";
 import { hunks, type Row } from "./diff.js";
+import { percentDown } from "../percent.js";
 
 // Text for the compare tools and resources: short answers inline, full side-by-side listings behind a URI.
 
@@ -41,7 +42,6 @@ export function confidence(m: Match, similarity: number): Confidence {
 }
 
 const hex4 = (n: number) => n.toString(16).padStart(4, "0");
-const pct = (x: number) => `${Math.round(100 * x)}%`;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** A node name or listing address in one game, as a function both trees can show. */
@@ -73,7 +73,7 @@ function sizes(c: Correspondence, d: PairDetail): string {
 export function verdict(c: Correspondence, d: PairDetail): string {
   if (d.identical) return `Identical: the same instructions once addresses are renamed, and every callee is the other's counterpart (${sizes(c, d)}).`;
   if (d.sameCode) return `The same instructions once addresses are renamed, but not every callee is the other's counterpart (see Calls).`;
-  return `Changed: ${pct(d.alignment.similarity)} of the instructions line up (${sizes(c, d)}${d.alignment.exact ? "" : "; too long to align exactly, the differing middle is shown as removed then added"}).`;
+  return `Changed: ${percentDown(d.alignment.similarity)} of the instructions line up (${sizes(c, d)}${d.alignment.exact ? "" : "; too long to align exactly, the differing middle is shown as removed then added"}).`;
 }
 
 /** callee pairs listed inline; the full side by side lists them all */
@@ -275,7 +275,7 @@ export function renderMap(c: Correspondence, filter: MapFilter, page: number): s
       ? `- ${r.a}: only in ${c.a.name}`
       : r.status === "only-b"
         ? `- ${r.b}: only in ${c.b.name}`
-        : `- ${r.a} ↔ ${r.b}: ${r.status === "identical" ? "identical" : r.sameCode ? "same instructions, other callees" : `changed, ${pct(r.similarity!)} lines up`} (${r.confidence})`;
+        : `- ${r.a} ↔ ${r.b}: ${r.status === "identical" ? "identical" : r.sameCode ? "same instructions, other callees" : `changed, ${percentDown(r.similarity!)} lines up`} (${r.confidence})`;
   return [
     `# ${c.a.name} ↔ ${c.b.name}: ${filter} functions, page ${page} of ${pages}`,
     "",

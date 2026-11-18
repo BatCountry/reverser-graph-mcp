@@ -5,6 +5,7 @@ import { sameCodeText, treeName, urisOf, workUnitLine, workUnitState, type Conte
 import { getSameCode, getWorkPlan, implementedNodes, nodeLines } from "../graph/workplan-cache.js";
 import { DEFAULT_WORK_UNIT_OPTIONS, parseWorkUnitId, workUnitId, type WorkPlan, type WorkUnit } from "../graph/workunits.js";
 import type { ToolDeps } from "./common.js";
+import { percentDown } from "../percent.js";
 
 export interface NextWorkOutput {
   work_unit: string;
@@ -111,7 +112,7 @@ function describeUnit(ctx: Context, plan: WorkPlan, unit: WorkUnit): string {
   const known = unit.indirectCalls.length ? " else" : "";
   if (deps === 0) parts.push(`Ready: it calls nothing${known} outside itself, so it can be written and tested on its own.`);
   else if (waiting === 0) parts.push(`Ready: all ${plural(deps, "work unit")} it calls are complete.`);
-  else parts.push(`Waiting on ${waiting} of ${plural(deps, "work unit")} it calls (readiness ${Math.round(unit.readiness * 100)}%): stub those calls or do them first.`);
+  else parts.push(`Waiting on ${waiting} of ${plural(deps, "work unit")} it calls (readiness ${percentDown(unit.readiness)}): stub those calls or do them first.`);
   if (unit.indirectCalls.length) {
     const byAdvice = new Map<string, string[]>();
     for (const c of unit.indirectCalls) {
@@ -214,7 +215,7 @@ export function renderWorkPlan(ctx: Context): string {
     `Best first: ready units (everything they call is done), then those that unblock the most others, then compact ones. Detail of one unit: ${urisOf(ctx).base}work-unit/{id} (id URL-encoded), or next_work with \`module\`.`,
   ];
   if (plan.ranked.length === 0) return [...head, "", "Nothing left: every work unit is complete."].join("\n");
-  const rows = plan.ranked.slice(0, WORK_PLAN_ROWS).map((u, i) => `| ${i + 1} | [${u.id}](${urisOf(ctx).workUnit(u.id)}) | ${u.members.length} | ${u.lines} | ${Math.round(u.readiness * 100)}% | ${u.unblocks} | ${workUnitState(plan, u)} |`);
+  const rows = plan.ranked.slice(0, WORK_PLAN_ROWS).map((u, i) => `| ${i + 1} | [${u.id}](${urisOf(ctx).workUnit(u.id)}) | ${u.members.length} | ${u.lines} | ${percentDown(u.readiness)} | ${u.unblocks} | ${workUnitState(plan, u)} |`);
   const more = plan.ranked.length > WORK_PLAN_ROWS ? [`… ${plan.ranked.length - WORK_PLAN_ROWS} more incomplete units not shown; they come up as these are completed.`] : [];
   return [...head, "", "| # | work unit | members | lines | readiness | unblocks | state |", "| --- | --- | --- | --- | --- | --- | --- |", ...rows, ...more].join("\n");
 }

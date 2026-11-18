@@ -105,7 +105,7 @@ describe("renderCounterpart", () => {
   test("changed, asked from either game, with a note", () => {
     const t = renderCounterpart(c, "b", id(0x240), "beta: read as X");
     expect(t.startsWith("beta: read as X\n\n# MAIN-root:0040 (alpha) ↔ MAIN-root:0240 (beta)")).toBe(true);
-    expect(t).toContain("Changed: 67% of the instructions line up (3 instructions in alpha, 3 in beta).");
+    expect(t).toContain("Changed: 66% of the instructions line up (3 instructions in alpha, 3 in beta).");
     expect(t).toContain("## Differences (1 of 1 changed stretch)");
     expect(t).toContain("- 0042       add ax, 2\n+      0242  add ax, 3");
   });

@@ -38,7 +38,20 @@ const s = (tag, props, ...kids) => build(document.createElementNS(SVG_NS, tag), 
 
 const fmt = (n) => Number(n).toLocaleString("en-US");
 const pct = (a, b) => (b > 0 ? (100 * a) / b : 0);
-const pctText = (a, b) => `${pct(a, b).toFixed(pct(a, b) < 10 && a > 0 ? 1 : 0)}%`;
+/** A fraction as a percentage, rounded down: only 1 reads 100% and only 0 reads 0%. One decimal near either end
+ * (99.8%, 0.4%), more for a value so small one decimal would still read 0 (0.08%). The same rule as src/percent.ts
+ * (this page has no build step, so it keeps its own copy); the 1e-9 nudge only undoes float error such as 0.29 * 100. */
+const percentDown = (fraction) => {
+  if (!(fraction > 0)) return "0%";
+  if (fraction >= 1) return "100%";
+  const whole = Math.floor(100 * fraction + 1e-9);
+  for (let digits = whole < 10 || whole >= 90 ? 1 : 0; ; digits++) {
+    const scale = 10 ** digits;
+    const n = Math.floor(100 * scale * fraction + 1e-9);
+    if (digits >= 6 || (n > 0 && n < 100 * scale)) return `${(n / scale).toFixed(digits)}%`;
+  }
+};
+const pctText = (a, b) => (b > 0 ? percentDown(a / b) : "0%");
 const hex = (n, w = 4) => (n === null || n === undefined ? "?" : `0x${n.toString(16).padStart(w, "0")}`);
 const moduleHref = (id) => `#/m/${encodeURIComponent(id)}`;
 const modLink = (id, label = id) => h("a", { class: "mod", href: moduleHref(id) }, label);
@@ -655,7 +668,7 @@ const leadsHref = (game, id) => `#/cp/${encodeURIComponent(game)}/${encodeURICom
 /** a function of game A opens its module page; one of game B its counterpart page (the dashboard tracks A) */
 const gameLink = (game, id) => h("a", { class: "mod", href: game === state.compare.a ? moduleHref(id) : leadsHref(game, id) }, id);
 const STATUS_LABEL = () => ({ identical: "identical", changed: "changed", "only-a": `only in ${state.compare.a}`, "only-b": `only in ${state.compare.b}` });
-const simText = (x) => `${Math.round(100 * x)}%`;
+const simText = percentDown;
 
 function statusBadge(status, sameCode) {
   if (sameCode) return badge("other callees", "ready");

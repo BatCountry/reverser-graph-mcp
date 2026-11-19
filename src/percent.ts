@@ -5,7 +5,8 @@
  *
  * The fractions come from whole counts of at most a few million, so a true value below 1 is at least ~1e-7 below it;
  * the 1e-9 nudge only undoes float error such as 0.29 * 100 = 28.999999999999996.
- * web/app.js keeps the same rule for the dashboard (it has no build step and cannot import this).
+ * The dashboard page imports this module too (src/web/app.ts; the server serves build/percent.js at /percent.js), so
+ * it must stay free of Node imports.
  */
 export function percentDown(fraction: number): string {
   if (!(fraction > 0)) return "0%";

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { listingFor } from "../graph/files.js";
+import { parseCodeLine } from "../graph/listing-targets.js";
 import type { CallGraph } from "../graph/model.js";
 import type { WorkUnit } from "../graph/workunits.js";
 
@@ -14,7 +15,6 @@ import type { WorkUnit } from "../graph/workunits.js";
 // Everything else must match exactly: opcodes, registers, immediates, stack and field offsets ([bp - 6], [si + 0x592]).
 // Not compared: bytes outside the listings, so string literals and data reached through those pointers.
 
-const LINE = /^([0-9a-f]{4,8}) {2}[0-9a-f]+\s+(.*)$/i;
 const ABSOLUTE = /(?:\b([cdes]s):)?\[(0x[0-9a-f]+|\d+)\]/g;
 const DIRECT = /^(l?call[a-z]*|l?jmp[a-z]*|j[a-z]{1,4}|loop[a-z]{0,2}|jcxz)\s+(?:0x[0-9a-f]+|\d+)(?:,\s*(?:0x[0-9a-f]+|\d+))?$/i;
 const NEAR_TARGET = /\s(0x[0-9a-f]+|\d+)$/i;
@@ -50,8 +50,9 @@ export function readInsns(disassemblyRoot: string, graph: CallGraph, id: string)
   }
   const out: Insn[] = [];
   for (const line of text.split("\n")) {
-    const m = LINE.exec(line);
-    if (m) out.push({ addr: parseInt(m[1]!, 16), text: m[2]!.trim() });
+    // batch-file lines have no instruction bytes: nothing to compare
+    const c = parseCodeLine(line);
+    if (c?.bytes) out.push({ addr: c.addr, text: c.code });
   }
   return out.sort((a, b) => a.addr - b.addr);
 }

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "vitest";
-import { CALL_TARGET_HEADER, MAX_LINE_TARGETS, annotateCallTargets, stubCallText } from "../src/graph/listing-targets.js";
+import { CALL_TARGET_HEADER, MAX_LINE_TARGETS, annotateCallTargets, annotateListing, parseCodeLine, stubCallText } from "../src/graph/listing-targets.js";
 import { CallGraph, type GraphNode } from "../src/graph/model.js";
 import { IDS, LISTING_A, makeFixture } from "./fixture.js";
 
@@ -106,5 +106,67 @@ describe("annotateCallTargets", () => {
     // a returning call edge never matches a non-transfer line, and a fall-through edge never matches a call line
     expect(annotateCallTargets(g, g.nodes.get("s:0010")!, "0011  90  nop")).toBe("0011  90  nop");
     expect(annotateCallTargets(g, g.nodes.get("s:0040")!, "004d  e80000  call 0x50")).toBe("004d  e80000  call 0x50");
+  });
+});
+
+describe("parseCodeLine", () => {
+  test.each([
+    ["0012  e81b00  call 0x30", { addr: 0x12, bytes: "e81b00", code: "call 0x30" }],
+    ["0012  e81b00      call 0x30   ", { addr: 0x12, bytes: "e81b00", code: "call 0x30" }],
+    // a batch-file line: no bytes, its text past the bytes column
+    ["0003                if exist snd.exe snd", { addr: 3, bytes: "", code: "if exist snd.exe snd" }],
+    ["0A1F  CD21  int 0x21", { addr: 0xa1f, bytes: "CD21", code: "int 0x21" }],
+    ["00012345  90  nop", { addr: 0x12345, bytes: "90", code: "nop" }],
+    ["ffff  c3  ret", { addr: 0xffff, bytes: "c3", code: "ret" }],
+  ])("%j is a line of code", (line, parsed) => {
+    expect(parseCodeLine(line)).toEqual(parsed);
+  });
+  test.each([
+    "",
+    "; MAIN_EXE:0010",
+    "012  90  nop", // 3 address digits
+    "000012345  90  nop", // 9
+    "0012 90 nop", // one space after the address
+    "0012\t90\tnop",
+    " 0012  90  nop", // indented
+    "0012   ", // an address and nothing else
+    "0012  zz  nop", // bytes that are not hex
+    "g012  90  nop",
+  ])("%j is not", (line) => {
+    expect(parseCodeLine(line)).toBeUndefined();
+  });
+});
+
+describe("annotateListing", () => {
+  const fn = (id: string, address: number): GraphNode => ({ id, kind: "function", space: "m-1", address, file_offset: 0, source_file: "X.OVR", listing: null, entrypoint: false });
+  const g = new CallGraph({
+    aliases: {},
+    nodes: {
+      ...Object.fromEntries([fn("m-1:0010", 0x10), fn("m-1:0030", 0x30), fn("m-1:0040", 0x40)].map((n) => [n.id, n])),
+      "unknown:m-1:0020": { id: "unknown:m-1:0020", kind: "unknown-target", space: null, address: null, file_offset: null, source_file: null, listing: null, entrypoint: false },
+    },
+    edges: [
+      { source: "m-1:0010", target: "m-1:0030", instruction: "call 0x30", instruction_offset: "m-1:0012", returns: true, conditions: [] },
+      { source: "m-1:0010", target: "unknown:m-1:0020", instruction: "call word [bx]", instruction_offset: "m-1:0020", returns: true, conditions: [] },
+      { source: "m-1:0010", target: "m-1:0040", instruction: "call word [bx]", instruction_offset: "m-1:0020", returns: true, conditions: [], through: "ds:[0200]" },
+    ],
+  });
+  const text = "; m-1:0010 shared with m-1:0040 and m-9:9999\n; no node here\n0012  e81b00  call 0x30\n0014  90  nop\n0020  ff17  call word [bx]\n";
+  const a = annotateListing(g, g.nodes.get("m-1:0010")!, text);
+
+  test("comment lines are split at the graph nodes they name; other ids stay text", () => {
+    expect(a.lines[0]).toEqual({ text: "; m-1:0010 shared with m-1:0040 and m-9:9999", notes: [], parts: ["; ", { node: "m-1:0010" }, " shared with ", { node: "m-1:0040" }, " and m-9:9999"] });
+    expect(a.lines[1]).toEqual({ text: "; no node here", notes: [] });
+  });
+  test("code lines carry their transfer family and notes; unknown targets are null, named by the note", () => {
+    expect(a.lines[2]).toMatchObject({ code: { addr: 0x12, bytes: "e81b00", code: "call 0x30" }, transfer: "call", notes: [{ label: "→", targets: ["m-1:0030"], unknown: "unresolved (indirect)", more: 0 }] });
+    expect(a.lines[3]).toEqual({ text: "0014  90  nop", code: { addr: 0x14, bytes: "90", code: "nop" }, notes: [] });
+    expect(a.lines[4]!.notes).toEqual([{ label: "→", targets: [null, "m-1:0040"], unknown: "unresolved (indirect)", more: 0 }]);
+    expect(a.header).toEqual([CALL_TARGET_HEADER]);
+  });
+  test("the text form is the same listing with the notes after tabs, the final newline kept", () => {
+    expect(annotateCallTargets(g, g.nodes.get("m-1:0010")!, text)).toBe(
+      `${CALL_TARGET_HEADER}\n; m-1:0010 shared with m-1:0040 and m-9:9999\n; no node here\n0012  e81b00  call 0x30\t; → m-1:0030\n0014  90  nop\n0020  ff17  call word [bx]\t; → unresolved (indirect), m-1:0040\n`,
+    );
   });
 });

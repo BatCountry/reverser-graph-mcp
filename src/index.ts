@@ -101,7 +101,7 @@ let stopHttp: (() => Promise<void>) | undefined;
 if (config.dashboard) {
   const { port } = config.dashboard;
   try {
-    const http = await startHttp({ port, mcp: createServer, context: graphContext, webRoot: fileURLToPath(new URL("../web/", import.meta.url)), onerror, compare: compare?.correspondence, gameName: config.gameName });
+    const http = await startHttp({ port, mcp: createServer, context: graphContext, webRoot: fileURLToPath(new URL("../web/", import.meta.url)), buildRoot: fileURLToPath(new URL("./", import.meta.url)), onerror, compare: compare?.correspondence, gameName: config.gameName });
     stopHttp = http.close;
     console.error(`reverser-progress-graph dashboard at ${http.url}/ and MCP (streamable HTTP) at ${http.url}/mcp (disassembly_root=${config.disassemblyRoot}, progress=${config.progressFile}${comparing})`);
   } catch (error) {

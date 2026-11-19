@@ -26,8 +26,11 @@ call sites within the listing's own space, so a shared overlay address range is 
 A call through a stored pointer names the procedures the program stores there (at most 4 on the line, then
 `… (+N more …)`; `module` lists them all as callees, each site saying what it read, e.g. `through ds:[index+1200]`);
 what the graph cannot name shows as `unresolved (indirect)`, and `module` says why and how to translate it (a hand-off
-to the previous interrupt handler is not a function-pointer lookup). `module` also marks provisional functions (no
-call or jump to them is proven; listed because the code builds their address) with the evidence.
+to the previous interrupt handler is not a function-pointer lookup). On the other side, a function that is called
+through a stored pointer gets a hint that no call names it: it must be registered under every address the program
+stores for it (its Evidence lines name each store), and a path through the pointer should be tested. `module` also
+marks provisional functions (no call or jump to them is proven; listed because the code builds their address) with
+the evidence.
 
 A line range after the id, written as omp's `read` tool writes it (`:50-80`, `:50+30`, `:50` from line 50 on, `:-20`
 the last 20 lines; lines numbered from 1 in the file), returns only those lines under a `; <id>, lines 50-80 of 310`

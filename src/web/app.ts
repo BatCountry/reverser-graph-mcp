@@ -1,15 +1,45 @@
-// Progress dashboard for reverser-progress-graph. No build step, no dependencies: plain DOM over the JSON API in
-// src/dashboard/api.ts. Every string from the graph or progress.json goes in as text, never as markup.
+// Progress dashboard for reverser-progress-graph. TypeScript compiled by the normal build (npm run build) into
+// build/web/app.js; no dependencies: plain DOM over the JSON API in src/dashboard/api.ts and src/dashboard/compare.ts.
+// Every string from the graph or progress.json goes in as text, never as markup.
 
-const app = document.getElementById("app");
-const live = document.getElementById("live");
-const foot = document.getElementById("foot");
+import type { CompareSummary, CounterpartView, PairRow, PairView } from "../dashboard/compare.js";
+import type { FunctionStatus, ModuleDetail, ModuleRow, Neighbour, Summary, UnitRow } from "../dashboard/api.js";
+import type { Confidence, MapRow } from "../compare/render.js";
+import type { ListingLine } from "../graph/listing-targets.js";
+import { formatAddress } from "../hex.js";
+import { percentDown } from "../percent.js";
+
+const app = document.getElementById("app")!;
+const live = document.getElementById("live")!;
+const foot = document.getElementById("foot")!;
 const POLL_MS = 4000;
 
-const state = {
+/** The module list as fetched for one dashboard version. */
+interface ModuleCache {
+  version: string | null;
+  rows: ModuleRow[];
+  ids: Set<string>;
+  byId: Map<string, ModuleRow>;
+}
+
+type QueueFilter = "open" | "ready" | "complete" | "all";
+type MapStatus = MapRow["status"];
+
+const state: {
+  version: string | null;
+  modules: ModuleCache | null;
+  /** compare mode: the /api/compare/summary; null otherwise */
+  compare: CompareSummary | null;
+  ui: {
+    modules: { q: string; status: "all" | FunctionStatus; space: string; sort: string; asc: boolean };
+    queue: { show: QueueFilter };
+    compare: { q: string; status: "all" | MapStatus; sort: "address" | "similarity" };
+    pair: { all: boolean };
+  };
+} = {
   version: null,
-  modules: null, // { version, rows, ids:Set, byId:Map }
-  compare: null, // compare mode: { a, b, functions, counts, programs } from /api/compare/summary; null otherwise
+  modules: null,
+  compare: null,
   ui: {
     modules: { q: "", status: "all", space: "", sort: "space", asc: true },
     queue: { show: "open" },
@@ -22,42 +52,39 @@ const state = {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-function build(el, props, kids) {
+/** Anything `build` accepts as a child: nodes and text, with null/undefined/false skipped and arrays flattened. */
+type Kid = Node | string | number | boolean | null | undefined | readonly Kid[];
+type Props = Record<string, unknown>;
+
+function append(el: Element, kid: Kid): void {
+  if (kid === null || kid === undefined || kid === false) return;
+  if (kid instanceof Node) el.append(kid);
+  else if (Array.isArray(kid)) for (const k of kid as readonly Kid[]) append(el, k);
+  else el.append(String(kid));
+}
+
+function build<T extends Element>(el: T, props: Props | null | undefined, kids: Kid[]): T {
   for (const [k, v] of Object.entries(props ?? {})) {
     if (v === null || v === undefined || v === false) continue;
-    if (k === "class") el.setAttribute("class", v);
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+    if (k === "class") el.setAttribute("class", String(v));
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v as EventListener);
+    else if (k === "style" && typeof v === "object") Object.assign((el as unknown as HTMLElement).style, v);
     else el.setAttribute(k, v === true ? "" : String(v));
   }
-  for (const kid of kids.flat(Infinity)) if (kid !== null && kid !== undefined && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  append(el, kids);
   return el;
 }
-const h = (tag, props, ...kids) => build(document.createElement(tag), props, kids);
-const s = (tag, props, ...kids) => build(document.createElementNS(SVG_NS, tag), props, kids);
+const h = <K extends keyof HTMLElementTagNameMap>(tag: K, props?: Props | null, ...kids: Kid[]): HTMLElementTagNameMap[K] => build(document.createElement(tag), props, kids);
+const s = <K extends keyof SVGElementTagNameMap>(tag: K, props?: Props | null, ...kids: Kid[]): SVGElementTagNameMap[K] => build(document.createElementNS(SVG_NS, tag), props, kids);
 
-const fmt = (n) => Number(n).toLocaleString("en-US");
-const pct = (a, b) => (b > 0 ? (100 * a) / b : 0);
-/** A fraction as a percentage, rounded down: only 1 reads 100% and only 0 reads 0%. One decimal near either end
- * (99.8%, 0.4%), more for a value so small one decimal would still read 0 (0.08%). The same rule as src/percent.ts
- * (this page has no build step, so it keeps its own copy); the 1e-9 nudge only undoes float error such as 0.29 * 100. */
-const percentDown = (fraction) => {
-  if (!(fraction > 0)) return "0%";
-  if (fraction >= 1) return "100%";
-  const whole = Math.floor(100 * fraction + 1e-9);
-  for (let digits = whole < 10 || whole >= 90 ? 1 : 0; ; digits++) {
-    const scale = 10 ** digits;
-    const n = Math.floor(100 * scale * fraction + 1e-9);
-    if (digits >= 6 || (n > 0 && n < 100 * scale)) return `${(n / scale).toFixed(digits)}%`;
-  }
-};
-const pctText = (a, b) => (b > 0 ? percentDown(a / b) : "0%");
-const hex = (n, w = 4) => (n === null || n === undefined ? "?" : `0x${n.toString(16).padStart(w, "0")}`);
-const moduleHref = (id) => `#/m/${encodeURIComponent(id)}`;
-const modLink = (id, label = id) => h("a", { class: "mod", href: moduleHref(id) }, label);
-const unitRoot = (unitId) => unitId.replace(/^work:/, "");
+const fmt = (n: number) => Number(n).toLocaleString("en-US");
+const pct = (a: number, b: number) => (b > 0 ? (100 * a) / b : 0);
+const pctText = (a: number, b: number) => (b > 0 ? percentDown(a / b) : "0%");
+const moduleHref = (id: string) => `#/m/${encodeURIComponent(id)}`;
+const modLink = (id: string, label = id) => h("a", { class: "mod", href: moduleHref(id) }, label);
+const unitRoot = (unitId: string) => unitId.replace(/^work:/, "");
 
-function ago(iso) {
+function ago(iso: string) {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return iso;
   const sec = Math.max(0, (Date.now() - t) / 1000);
@@ -68,32 +95,32 @@ function ago(iso) {
   return iso.slice(0, 10);
 }
 
-function bar(parts) {
+function bar(parts: Array<[number, number, string]>) {
   return h("div", { class: "bar" }, parts.map(([value, total, color]) => h("i", { style: { width: `${pct(value, total)}%`, background: color } })));
 }
 
-function badge(text, cls = text) {
+function badge(text: string, cls = text) {
   return h("span", { class: `badge ${cls}` }, text);
 }
 
-async function getJSON(url) {
+async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { accept: "application/json" } });
   const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (!res.ok) throw Object.assign(new Error(body.error ?? `HTTP ${res.status}`), { status: res.status });
   return body;
 }
 
-async function modules() {
+async function modules(): Promise<ModuleCache> {
   if (state.modules && state.modules.version === state.version) return state.modules;
-  const { modules: rows } = await getJSON("/api/modules");
+  const { modules: rows } = await getJSON<{ modules: ModuleRow[] }>("/api/modules");
   state.modules = { version: state.version, rows, ids: new Set(rows.map((r) => r.id)), byId: new Map(rows.map((r) => [r.id, r])) };
   return state.modules;
 }
 
 // ------------------------------------------------------------------ overview
 
-function rings(fnDone, fnTotal, lnDone, lnTotal) {
-  const ring = (r, w, p, color) => {
+function rings(fnDone: number, fnTotal: number, lnDone: number, lnTotal: number) {
+  const ring = (r: number, w: number, p: number, color: string) => {
     const c = 2 * Math.PI * r;
     const arc = s("circle", { class: "arc", cx: 130, cy: 130, r, "stroke-width": w, stroke: color, "stroke-dasharray": c, "stroke-dashoffset": c });
     requestAnimationFrame(() => requestAnimationFrame(() => arc.setAttribute("stroke-dashoffset", String(c * (1 - p / 100)))));
@@ -113,7 +140,7 @@ function rings(fnDone, fnTotal, lnDone, lnTotal) {
   );
 }
 
-function stat(label, value, total, accent, extra) {
+function stat(label: string, value: number, total: number | undefined, accent: string, extra?: string) {
   return h(
     "div",
     { class: "stat", style: { "--accent": accent } },
@@ -124,7 +151,7 @@ function stat(label, value, total, accent, extra) {
   );
 }
 
-function burnup(timeline, total) {
+function burnup(timeline: Summary["timeline"], total: number) {
   if (timeline.length === 0) return h("div", { class: "empty" }, "No implementations recorded yet. Every add_implementation call lands here.");
   const day = 86400000;
   const pts = timeline.map((p) => ({ t: Date.parse(`${p.date}T00:00:00Z`), v: p.implemented }));
@@ -134,8 +161,8 @@ function burnup(timeline, total) {
   const W = 800, H = 200, L = 40, B = 22;
   const t0 = pts[0].t, t1 = Math.max(pts[pts.length - 1].t, t0 + day);
   const vmax = Math.max(4, Math.ceil(pts[pts.length - 1].v * 1.2));
-  const x = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - 8);
-  const y = (v) => H - B - (v / vmax) * (H - B - 10);
+  const x = (t: number) => L + ((t - t0) / (t1 - t0)) * (W - L - 8);
+  const y = (v: number) => H - B - (v / vmax) * (H - B - 10);
   // step line: progress happens on the day it was recorded
   let d = `M${x(pts[0].t)},${y(pts[0].v)}`;
   for (let i = 1; i < pts.length; i++) d += ` H${x(pts[i].t)} V${y(pts[i].v)}`;
@@ -160,7 +187,7 @@ function burnup(timeline, total) {
   );
 }
 
-function unitLine(u) {
+function unitLine(u: UnitRow) {
   return h(
     "a",
     { class: "row", href: moduleHref(u.root) },
@@ -177,12 +204,12 @@ function unitLine(u) {
   );
 }
 
-function spaceMap(rows, spaces) {
-  const bySpace = new Map();
+function spaceMap(rows: ModuleRow[], spaces: Summary["spaces"]) {
+  const bySpace = new Map<string, ModuleRow[]>();
   for (const r of rows) {
     const k = r.space ?? "(no space)";
     if (!bySpace.has(k)) bySpace.set(k, []);
-    bySpace.get(k).push(r);
+    bySpace.get(k)!.push(r);
   }
   return h(
     "div",
@@ -206,7 +233,7 @@ function spaceMap(rows, spaces) {
 }
 
 async function overview() {
-  const [sum, mods] = await Promise.all([getJSON("/api/summary"), modules()]);
+  const [sum, mods] = await Promise.all([getJSON<Summary>("/api/summary"), modules()]);
   const f = sum.functions;
   const u = sum.units;
   foot.textContent = `tree ${sum.disassemblyRoot} · progress ${sum.progressFile}`;
@@ -294,7 +321,14 @@ async function overview() {
 
 // ------------------------------------------------------------------ modules table
 
-const MODULE_COLUMNS = [
+interface Column {
+  key: string;
+  label: string;
+  num?: boolean;
+  get: (r: ModuleRow) => string | number;
+}
+
+const MODULE_COLUMNS: Column[] = [
   { key: "id", label: "Module", get: (r) => r.id },
   { key: "space", label: "Space", get: (r) => `${r.space ?? ""}:${String(r.address ?? 0).padStart(6, "0")}` },
   { key: "status", label: "Status", get: (r) => ({ implemented: 0, ready: 1, waiting: 2 })[r.status] },
@@ -309,7 +343,7 @@ async function modulesView() {
   const mods = await modules();
   const ui = state.ui.modules;
   const spaces = [...new Set(mods.rows.map((r) => r.space ?? ""))].sort();
-  const counts = { all: mods.rows.length, implemented: 0, ready: 0, waiting: 0 };
+  const counts: Record<"all" | FunctionStatus, number> = { all: mods.rows.length, implemented: 0, ready: 0, waiting: 0 };
   for (const r of mods.rows) counts[r.status]++;
 
   const tbody = h("tbody");
@@ -328,9 +362,9 @@ async function modulesView() {
       ...rows.map((r) =>
         h(
           "tr",
-          { onclick: (e) => { if (!(e.target instanceof HTMLAnchorElement)) location.hash = moduleHref(r.id); } },
+          { onclick: (e: Event) => { if (!(e.target instanceof HTMLAnchorElement)) location.hash = moduleHref(r.id); } },
           h("td", {}, modLink(r.id)),
-          h("td", { class: "mono" }, r.space ?? "", h("span", { style: { color: "var(--faint)" } }, ` ${hex(r.address)}`)),
+          h("td", { class: "mono" }, r.space ?? "", h("span", { style: { color: "var(--faint)" } }, ` ${formatAddress(r.address)}`)),
           h("td", {}, badge(r.status), r.sameCodeAs ? h("span", { class: "mono", style: { color: "var(--dim)", marginLeft: "6px" }, title: "implemented through this function's record: same code" }, `= ${r.sameCodeAs}`) : null),
           h("td", { class: "num" }, fmt(r.lines)),
           h("td", { class: "num" }, r.callers),
@@ -359,24 +393,24 @@ async function modulesView() {
       ),
     ),
   );
-  let timer;
+  let timer: number | undefined;
   const view = h(
     "section",
     { class: "card" },
     h(
       "div",
       { class: "toolbar" },
-      h("input", { type: "search", placeholder: "Filter by module or work unit…", value: ui.q, spellcheck: "false", oninput: (e) => { ui.q = e.target.value; clearTimeout(timer); timer = setTimeout(fill, 80); } }),
+      h("input", { type: "search", placeholder: "Filter by module or work unit…", value: ui.q, spellcheck: "false", oninput: (e: Event) => { ui.q = (e.target as HTMLInputElement).value; clearTimeout(timer); timer = window.setTimeout(fill, 80); } }),
       h(
         "div",
         { class: "chips" },
-        ["all", "implemented", "ready", "waiting"].map((k) =>
+        (["all", "implemented", "ready", "waiting"] as const).map((k) =>
           h("button", { class: `chip${ui.status === k ? " on" : ""}`, type: "button", onclick: () => { ui.status = k; render(); } }, k, h("span", { class: "n" }, fmt(counts[k]))),
         ),
       ),
       h(
         "select",
-        { onchange: (e) => { ui.space = e.target.value; fill(); } },
+        { onchange: (e: Event) => { ui.space = (e.target as HTMLSelectElement).value; fill(); } },
         h("option", { value: "" }, `all spaces (${spaces.length})`),
         spaces.map((sp) => h("option", { value: sp, selected: sp === ui.space }, sp)),
       ),
@@ -391,9 +425,9 @@ async function modulesView() {
 // ------------------------------------------------------------------ work queue
 
 async function queueView() {
-  const { units } = await getJSON("/api/units");
+  const { units } = await getJSON<{ units: UnitRow[] }>("/api/units");
   const ui = state.ui.queue;
-  const filters = { open: (u) => u.state !== "complete", ready: (u) => u.state === "ready", complete: (u) => u.state === "complete", all: () => true };
+  const filters: Record<QueueFilter, (u: UnitRow) => boolean> = { open: (u) => u.state !== "complete", ready: (u) => u.state === "ready", complete: (u) => u.state === "complete", all: () => true };
   const shown = units.filter(filters[ui.show]);
   return h(
     "section",
@@ -404,7 +438,7 @@ async function queueView() {
       h(
         "div",
         { class: "chips" },
-        Object.keys(filters).map((k) =>
+        (Object.keys(filters) as QueueFilter[]).map((k) =>
           h("button", { class: `chip${ui.show === k ? " on" : ""}`, type: "button", onclick: () => { ui.show = k; render(); } }, k, h("span", { class: "n" }, fmt(units.filter(filters[k]).length))),
         ),
       ),
@@ -438,68 +472,37 @@ async function queueView() {
 
 // ------------------------------------------------------------------ module detail
 
-// "XXXX  bytes  text": exactly two spaces after the address; a batch-file line (no bytes column) never matches
-const LINE = /^(\s*)([0-9a-f]{4,8})( {2})([0-9a-f]+)(\s+)(\S+)(.*)$/i;
+const TRANSFER_CLASS: Record<NonNullable<ListingLine["transfer"]>, string> = { call: " call", jmp: " jump", jcc: " jump", loop: " jump", ret: " ret" };
 
-function linkKnownIds(text, ids) {
-  // any token shaped like space:offset that names a known function becomes a link
-  const out = [];
-  let last = 0;
-  for (const m of text.matchAll(/[\w.-]+:[0-9a-f]{4,8}/gi)) {
-    if (!ids.has(m[0])) continue;
-    out.push(text.slice(last, m.index), h("a", { class: "t", href: moduleHref(m[0]) }, m[0]));
-    last = m.index + m[0].length;
-  }
-  out.push(text.slice(last));
-  return out;
-}
+const nodeLink = (id: string) => h("a", { class: "t", href: moduleHref(id) }, id);
 
-const LINK_TEXT = { interrupt: "calls into another program (interrupt)", runs: "runs another program", loads: "reads another program's file" };
-
-/** What a call site reads its target through, or for a link to another program what the link does and how. */
-function siteHow(site) {
-  if (site.link) return `  ${LINK_TEXT[site.link] ?? site.link}${site.through ? `: ${site.through}` : ""}`;
-  return site.through ? `  through ${site.through}` : "";
-}
-
-function asmLine(raw, ids) {
-  const tab = raw.indexOf("\t; ");
-  const code = tab >= 0 ? raw.slice(0, tab) : raw;
-  const note = tab >= 0 ? raw.slice(tab + 1) : "";
-  if (code.trimStart().startsWith(";")) return h("span", { class: "l" }, h("span", { class: "c" }, linkKnownIds(code, ids)));
-  // one note per annotation: "; → <nodes>", "; ↓ falls through into <nodes>", "; ⇒ <how>: <nodes>" (a link)
-  const tail = note
-    ? note.split("\t").flatMap((part) => {
-        const arrow = /^; (→|↓ falls through into|⇒ [^:]+:) (.*)$/.exec(part);
-        return arrow
-          ? [
-              "  ",
-              h("span", { class: "c" }, `; ${arrow[1]} `),
-              arrow[2].split(", ").flatMap((t, i) => [i ? ", " : "", t === "unresolved (indirect)" || t === "not in this tree" ? h("span", { class: "t ind" }, t) : ids.has(t) ? h("a", { class: "t", href: moduleHref(t) }, t) : t]),
-            ]
-          : ["  ", h("span", { class: "c" }, part)];
-      })
-    : null;
-  const m = LINE.exec(code);
-  // a line without instruction bytes (a batch file line) keeps its notes
-  if (!m) return h("span", { class: `l${note ? " xfer" : ""}` }, code, tail);
-  const mn = m[6].toLowerCase();
-  const kind = /call/.test(mn) ? " call" : /^(l?jmp|j[a-z]+|loop)/.test(mn) ? " jump" : /^(retf?|iret)/.test(mn) ? " ret" : "";
+/** One listing line as the server annotated it: comments with the nodes they name as links, code in columns, notes. */
+function asmLine(l: ListingLine) {
+  const notes = l.notes.map((n) => [
+    "  ",
+    h("span", { class: "c" }, `; ${n.label} `),
+    n.targets.map((t, i) => [i ? ", " : "", t === null ? h("span", { class: "t ind" }, n.unknown) : nodeLink(t)]),
+    n.more ? h("span", { class: "c" }, `, … (+${n.more} more: see Callees)`) : null,
+  ]);
+  const cls = `l${l.notes.length ? " xfer" : ""}`;
+  if (!l.code) return h("span", { class: cls }, h("span", { class: "c" }, (l.parts ?? [l.text]).map((p) => (typeof p === "string" ? p : nodeLink(p.node)))), notes);
+  const space = l.code.code.indexOf(" ");
+  const [mnemonic, operands] = space < 0 ? [l.code.code, ""] : [l.code.code.slice(0, space), l.code.code.slice(space)];
   return h(
     "span",
-    { class: `l${note ? " xfer" : ""}` },
-    m[1],
-    h("span", { class: "a" }, m[2]),
-    m[3],
-    h("span", { class: "b" }, m[4]),
-    m[5],
-    h("span", { class: `m${kind}` }, m[6]),
-    h("span", { class: "o" }, m[7]),
-    tail,
+    { class: cls },
+    h("span", { class: "a" }, formatAddress(l.code.addr).slice(2)),
+    "  ",
+    // the generator pads the bytes column to 12; a batch-file line has none
+    h("span", { class: "b" }, l.code.bytes.padEnd(12)),
+    "  ",
+    h("span", { class: `m${l.transfer ? TRANSFER_CLASS[l.transfer] : ""}` }, mnemonic),
+    h("span", { class: "o" }, operands),
+    notes,
   );
 }
 
-function neighbourList(list, title) {
+function neighbourList(list: Neighbour[], title: string) {
   return h(
     "section",
     { class: "card" },
@@ -524,7 +527,7 @@ function neighbourList(list, title) {
                 { class: "sites" },
                 n.reason ? h("div", { class: "cond" }, n.reason) : null,
                 n.sites.map((st) =>
-                  h("div", {}, `${st.at}  ${st.instruction}${siteHow(st)}${st.possible ? (st.link ? "  (possible)" : "  (possible: record field match)") : ""}`, st.conditions.length ? h("div", { class: "cond" }, `  when ${st.conditions.join("; ")}`) : null),
+                  h("div", {}, st.text, st.conditions.length ? h("div", { class: "cond" }, `  when ${st.conditions.join("; ")}`) : null),
                 ),
               ),
             ),
@@ -535,10 +538,10 @@ function neighbourList(list, title) {
 }
 
 /** How the program reaches this node: the shortest call chain from each of the nearest entrypoints. */
-function tracesCard(d) {
+function tracesCard(d: ModuleDetail) {
   const t = d.traces;
   const aside = t.total > t.shown.length ? `${t.total} entrypoints, nearest ${t.shown.length}` : `${t.total} entrypoint${t.total === 1 ? "" : "s"}`;
-  let body;
+  let body: HTMLElement;
   if (t.targetIsRoot) body = h("div", { class: "empty" }, "An entrypoint itself: nothing in the call graph calls it.");
   else if (t.total === 0) {
     body = h(
@@ -564,7 +567,7 @@ function tracesCard(d) {
               h(
                 "li",
                 {},
-                `${hop.at}  ${hop.instruction}${siteHow(hop)}${hop.possible ? "  (possible)" : ""}${hop.otherSites ? `  (+${hop.otherSites} more site${hop.otherSites === 1 ? "" : "s"})` : ""}`,
+                `${hop.text}${hop.otherSites ? `  (+${hop.otherSites} more site${hop.otherSites === 1 ? "" : "s"})` : ""}`,
                 hop.conditions.length ? h("div", { class: "cond" }, `when ${hop.conditions.join("; ")}`) : null,
                 h("div", {}, "→ ", hop.to === d.id ? h("b", {}, hop.to) : modLink(hop.to)),
               ),
@@ -577,11 +580,10 @@ function tracesCard(d) {
   return h("section", { class: "card" }, h("h2", {}, "Reached from", h("span", { class: "aside" }, t.targetIsRoot ? "entrypoint" : aside)), body);
 }
 
-async function moduleView(id) {
-  const [d, mods, cp] = await Promise.all([
-    getJSON(`/api/modules/${encodeURIComponent(id)}`),
-    modules(),
-    state.compare ? getJSON(`/api/compare/counterpart/${encodeURIComponent(state.compare.a)}/${encodeURIComponent(id)}`).catch(() => null) : null,
+async function moduleView(id: string) {
+  const [d, cp] = await Promise.all([
+    getJSON<ModuleDetail>(`/api/modules/${encodeURIComponent(id)}`),
+    state.compare ? getJSON<CounterpartView>(`/api/compare/counterpart/${encodeURIComponent(state.compare.a)}/${encodeURIComponent(id)}`).catch(() => null) : null,
   ]);
   if (d.id !== id) history.replaceState(null, "", moduleHref(d.id));
   const u = d.unit;
@@ -602,10 +604,12 @@ async function moduleView(id) {
 
   const records = [
     ...d.implementations.map((r) => h("article", { class: "impl" }, h("time", { title: r.recordedAt }, `implemented · ${ago(r.recordedAt)}`), h("p", {}, h("b", { class: "mono" }, r.function), " in ", h("span", { class: "mono" }, r.file)))),
-    ...d.annotations.map((r) => h("article", {}, h("time", { title: r.recordedAt }, `${r.annotation_type} · ${ago(r.recordedAt)}`), h("p", {}, r.description), r.references.length ? h("p", { style: { color: "var(--dim)", fontSize: "12px" } }, "refs: ", r.references.map((x, i) => [i ? ", " : "", x.reference_type === "module" && mods.ids.has(x.reference_content) ? modLink(x.reference_content) : x.reference_content])) : null)),
+    // module references are node ids: annotate resolves them when it records the note
+    ...d.annotations.map((r) => h("article", {}, h("time", { title: r.recordedAt }, `${r.annotation_type} · ${ago(r.recordedAt)}`), h("p", {}, r.description), r.references.length ? h("p", { style: { color: "var(--dim)", fontSize: "12px" } }, "refs: ", r.references.map((x, i) => [i ? ", " : "", x.reference_type === "module" ? modLink(x.reference_content) : x.reference_content])) : null)),
   ];
 
-  const lines = d.listing ? d.listing.replace(/\n$/, "").split("\n") : [];
+  // header comments, then the file's lines; its last newline ends the last line and is no empty line of its own
+  const lines = d.listing ? [...d.listing.header.map((text): ListingLine => ({ text, notes: [] })), ...d.listing.lines.filter((l, i, all) => l.text !== "" || i < all.length - 1)] : [];
   return h(
     "div",
     {},
@@ -631,8 +635,8 @@ async function moduleView(id) {
       "div",
       { class: "facts" },
       h("span", {}, "space ", h("b", {}, d.space ?? "—")),
-      h("span", {}, "address ", h("b", {}, hex(d.address))),
-      h("span", {}, "file offset ", h("b", {}, hex(d.fileOffset, 6))),
+      h("span", {}, "address ", h("b", {}, formatAddress(d.address))),
+      h("span", {}, "file offset ", h("b", {}, formatAddress(d.fileOffset, 6))),
       h("span", {}, "in ", h("b", {}, d.sourceFile ?? "—")),
       h("span", {}, h("b", {}, fmt(d.lines)), " lines"),
       h("span", {}, h("b", {}, d.callers.length), " callers"),
@@ -655,7 +659,7 @@ async function moduleView(id) {
         "section",
         { class: "card listing" },
         h("h2", {}, "Listing", h("span", { class: "aside" }, d.listing ? `${fmt(lines.length)} lines · ${d.listingUri}` : "")),
-        d.listing ? h("pre", { class: "asm" }, lines.map((l) => asmLine(l, mods.ids))) : h("div", { class: "empty", style: { padding: "0 20px 18px" } }, "No listing on disk for this node."),
+        d.listing ? h("pre", { class: "asm" }, lines.map(asmLine)) : h("div", { class: "empty", style: { padding: "0 20px 18px" } }, "No listing on disk for this node."),
       ),
     ),
   );
@@ -663,52 +667,52 @@ async function moduleView(id) {
 
 // ------------------------------------------------------------------ compare (only with --compare)
 
-const pairHref = (a, b) => `#/c/${encodeURIComponent(a)}/${encodeURIComponent(b)}`;
-const leadsHref = (game, id) => `#/cp/${encodeURIComponent(game)}/${encodeURIComponent(id)}`;
+const pairHref = (a: string, b: string) => `#/c/${encodeURIComponent(a)}/${encodeURIComponent(b)}`;
+const leadsHref = (game: string, id: string) => `#/cp/${encodeURIComponent(game)}/${encodeURIComponent(id)}`;
 /** a function of game A opens its module page; one of game B its counterpart page (the dashboard tracks A) */
-const gameLink = (game, id) => h("a", { class: "mod", href: game === state.compare.a ? moduleHref(id) : leadsHref(game, id) }, id);
-const STATUS_LABEL = () => ({ identical: "identical", changed: "changed", "only-a": `only in ${state.compare.a}`, "only-b": `only in ${state.compare.b}` });
+const gameLink = (game: string, id: string) => h("a", { class: "mod", href: game === state.compare!.a ? moduleHref(id) : leadsHref(game, id) }, id);
+const STATUS_LABEL = (): Record<MapStatus, string> => ({ identical: "identical", changed: "changed", "only-a": `only in ${state.compare!.a}`, "only-b": `only in ${state.compare!.b}` });
 const simText = percentDown;
 
-function statusBadge(status, sameCode) {
+function statusBadge(status: MapStatus, sameCode?: boolean) {
   if (sameCode) return badge("other callees", "ready");
   return badge(STATUS_LABEL()[status], status === "identical" ? "complete" : status === "changed" ? "ready" : "waiting");
 }
 
-function confidenceBadge(c) {
+function confidenceBadge(c?: Confidence) {
   return c ? badge(c, c === "weak" ? "warn" : c === "likely" ? "plain" : "info") : null;
 }
 
 /** On a module page: where this function went in the other game. */
-function counterpartCard(cp) {
-  const { b } = state.compare;
+function counterpartCard(cp: CounterpartView) {
+  const { b } = state.compare!;
   return h(
     "section",
     { class: "card" },
     h("h2", {}, `Counterpart in ${b}`),
-    cp.b
+    cp.a && cp.b
       ? h("div", { class: "detail-head" }, h("a", { class: "mod", href: pairHref(cp.a, cp.b) }, cp.b), h("a", { class: "chip", href: pairHref(cp.a, cp.b) }, "side by side"))
       : h("div", {}, h("span", { class: "empty" }, "None found. "), h("a", { class: "mod", href: leadsHref(cp.game, cp.id) }, "leads")),
   );
 }
 
 /** Program pairs and unpaired programs with the reason; nothing for two trees without a programs table. */
-function programsList(a, b, { pairs, unpaired }) {
+function programsList(a: string, b: string, { pairs, unpaired }: CompareSummary["programs"]) {
   if (pairs.length === 1 && pairs[0].a === "" && pairs[0].b === "") return null;
-  const name = (program, game) => `${program || "the whole tree"} (${game})`;
+  const name = (program: string, game: string) => `${program || "the whole tree"} (${game})`;
   return h(
     "ul",
     { class: "note" },
     pairs.map((p) => h("li", {}, `${name(p.a, a)} ↔ ${name(p.b, b)}, ${p.shared} of their ${p.union} distinct function bodies in both`)),
-    [...unpaired.a.map((u) => [u, a]), ...unpaired.b.map((u) => [u, b])].map(([u, game]) => h("li", {}, `${name(u.program, game)}: no partner, ${u.reason}`)),
+    [...unpaired.a.map((u) => [u, a] as const), ...unpaired.b.map((u) => [u, b] as const)].map(([u, game]) => h("li", {}, `${name(u.program, game)}: no partner, ${u.reason}`)),
   );
 }
 
 async function compareView() {
-  const { rows } = await getJSON("/api/compare/map");
-  const { a, b, counts, functions, programs } = state.compare;
+  const { rows } = await getJSON<{ rows: MapRow[] }>("/api/compare/map");
+  const { a, b, counts, functions, programs } = state.compare!;
   const ui = state.ui.compare;
-  const filters = { all: () => true, identical: (r) => r.status === "identical", changed: (r) => r.status === "changed", "only-a": (r) => r.status === "only-a", "only-b": (r) => r.status === "only-b" };
+  const filters: Record<"all" | MapStatus, (r: MapRow) => boolean> = { all: () => true, identical: (r) => r.status === "identical", changed: (r) => r.status === "changed", "only-a": (r) => r.status === "only-a", "only-b": (r) => r.status === "only-b" };
   const tbody = h("tbody");
   const count = h("span", { class: "count" });
   const fill = () => {
@@ -719,10 +723,10 @@ async function compareView() {
     count.textContent = `${fmt(shown.length)} of ${fmt(rows.length)}`;
     tbody.replaceChildren(
       ...shown.map((r) => {
-        const href = r.a && r.b ? pairHref(r.a, r.b) : r.a ? leadsHref(a, r.a) : leadsHref(b, r.b);
+        const href = r.a && r.b ? pairHref(r.a, r.b) : r.a ? leadsHref(a, r.a) : leadsHref(b, r.b!);
         return h(
           "tr",
-          { onclick: (e) => { if (!(e.target instanceof HTMLAnchorElement)) location.hash = href; } },
+          { onclick: (e: Event) => { if (!(e.target instanceof HTMLAnchorElement)) location.hash = href; } },
           h("td", {}, r.a ? h("a", { class: "mod", href }, r.a) : ""),
           h("td", {}, r.b ? h("a", { class: "mod", href }, r.b) : ""),
           h("td", {}, statusBadge(r.status, r.sameCode)),
@@ -732,7 +736,7 @@ async function compareView() {
       }),
     );
   };
-  let timer;
+  let timer: number | undefined;
   const matched = counts.identical + counts.changed;
   const view = h(
     "div",
@@ -757,17 +761,17 @@ async function compareView() {
       h(
         "div",
         { class: "toolbar" },
-        h("input", { type: "search", placeholder: `Filter by ${a} or ${b} function…`, value: ui.q, spellcheck: "false", oninput: (e) => { ui.q = e.target.value; clearTimeout(timer); timer = setTimeout(fill, 80); } }),
+        h("input", { type: "search", placeholder: `Filter by ${a} or ${b} function…`, value: ui.q, spellcheck: "false", oninput: (e: Event) => { ui.q = (e.target as HTMLInputElement).value; clearTimeout(timer); timer = window.setTimeout(fill, 80); } }),
         h(
           "div",
           { class: "chips" },
-          Object.keys(filters).map((k) =>
+          (Object.keys(filters) as Array<"all" | MapStatus>).map((k) =>
             h("button", { class: `chip${ui.status === k ? " on" : ""}`, type: "button", onclick: () => { ui.status = k; render(); } }, k === "all" ? "all" : STATUS_LABEL()[k], h("span", { class: "n" }, fmt(rows.filter(filters[k]).length))),
           ),
         ),
         h(
           "select",
-          { onchange: (e) => { ui.sort = e.target.value; fill(); } },
+          { onchange: (e: Event) => { ui.sort = (e.target as HTMLSelectElement).value as typeof ui.sort; fill(); } },
           h("option", { value: "address", selected: ui.sort === "address" }, `${a} address order`),
           h("option", { value: "similarity", selected: ui.sort === "similarity" }, "least alike first"),
         ),
@@ -780,11 +784,11 @@ async function compareView() {
   return view;
 }
 
-function pairRows(rows, all) {
+function pairRows(rows: PairRow[], all: boolean) {
   // changes plus 3 rows of context, unless everything was asked for
   const keep = rows.map(() => all);
   if (!all) rows.forEach((r, i) => { if (r.kind === "a" || r.kind === "b") for (let k = Math.max(0, i - 3); k <= Math.min(rows.length - 1, i + 3); k++) keep[k] = true; });
-  const out = [];
+  const out: HTMLElement[] = [];
   for (let i = 0; i < rows.length; ) {
     if (keep[i]) {
       const r = rows[i++];
@@ -792,9 +796,9 @@ function pairRows(rows, all) {
         h(
           "tr",
           { class: `k-${r.kind}` },
-          h("td", { class: "ad" }, r.a ? hex(r.a.addr).slice(2) : ""),
+          h("td", { class: "ad" }, r.a ? formatAddress(r.a.addr).slice(2) : ""),
           h("td", { class: "tx" }, r.a ? r.a.text : ""),
-          h("td", { class: "ad" }, r.b ? hex(r.b.addr).slice(2) : ""),
+          h("td", { class: "ad" }, r.b ? formatAddress(r.b.addr).slice(2) : ""),
           h("td", { class: "tx" }, r.b ? r.b.text : ""),
         ),
       );
@@ -808,8 +812,8 @@ function pairRows(rows, all) {
   return out;
 }
 
-function callPairList(p) {
-  const { a, b } = state.compare;
+function callPairList(p: PairView) {
+  const { a, b } = state.compare!;
   if (!p.calls.length) return h("div", { class: "empty" }, "No calls to other functions.");
   return h(
     "div",
@@ -827,9 +831,9 @@ function callPairList(p) {
   );
 }
 
-async function pairView(ida, idb) {
-  const p = await getJSON(`/api/compare/pair/${encodeURIComponent(ida)}/${encodeURIComponent(idb)}`);
-  const { a, b } = state.compare;
+async function pairView(ida: string, idb: string): Promise<HTMLElement> {
+  const p = await getJSON<PairView>(`/api/compare/pair/${encodeURIComponent(ida)}/${encodeURIComponent(idb)}`);
+  const { a, b } = state.compare!;
   const ui = state.ui.pair;
   const changes = p.rows.filter((r) => r.kind === "a" || r.kind === "b").length;
   return h(
@@ -871,20 +875,20 @@ async function pairView(ida, idb) {
   );
 }
 
-async function counterpartPage(game, id) {
-  const v = await getJSON(`/api/compare/counterpart/${encodeURIComponent(game)}/${encodeURIComponent(id)}`);
+async function counterpartPage(game: string, id: string): Promise<HTMLElement> {
+  const v = await getJSON<CounterpartView>(`/api/compare/counterpart/${encodeURIComponent(game)}/${encodeURIComponent(id)}`);
   if (v.a && v.b) {
     history.replaceState(null, "", pairHref(v.a, v.b));
     return pairView(v.a, v.b);
   }
-  const there = game === state.compare.a ? state.compare.b : state.compare.a;
-  const pairOf = (x, y) => (game === state.compare.a ? pairHref(x, y) : pairHref(y, x));
-  const lead = (title, items) => h("section", { class: "card" }, h("h2", {}, title, h("span", { class: "aside" }, items.length)), items.length ? h("div", { class: "list" }, items) : h("div", { class: "empty" }, "None."));
+  const there = game === state.compare!.a ? state.compare!.b : state.compare!.a;
+  const pairOf = (x: string, y: string) => (game === state.compare!.a ? pairHref(x, y) : pairHref(y, x));
+  const lead = (title: string, items: HTMLElement[]) => h("section", { class: "card" }, h("h2", {}, title, h("span", { class: "aside" }, items.length)), items.length ? h("div", { class: "list" }, items) : h("div", { class: "empty" }, "None."));
   return h(
     "div",
     {},
     h("div", { class: "crumbs" }, h("a", { href: "#/compare" }, "Compare"), ` / ${game}`),
-    h("div", { class: "detail-head" }, h("h1", {}, v.id), badge(`only in ${game}`, "waiting"), game === state.compare.a ? modLink(v.id, "module page") : null),
+    h("div", { class: "detail-head" }, h("h1", {}, v.id), badge(`only in ${game}`, "waiting"), game === state.compare!.a ? modLink(v.id, "module page") : null),
     v.note ? h("div", { class: "note" }, v.note) : null,
     h("div", { class: "note" }, `No counterpart found in ${there}. These are the leads:`),
     h(
@@ -901,7 +905,7 @@ async function counterpartPage(game, id) {
         "section",
         { class: "card listing" },
         h("h2", {}, "Listing", h("span", { class: "aside" }, `${fmt(v.listing.length)} instructions in ${game}`)),
-        h("pre", { class: "asm" }, v.listing.map((x) => h("span", { class: "l" }, h("span", { class: "a" }, hex(x.addr).slice(2)), "  ", x.text))),
+        h("pre", { class: "asm" }, v.listing.map((x) => h("span", { class: "l" }, h("span", { class: "a" }, formatAddress(x.addr).slice(2)), "  ", x.text))),
       ),
     ),
   );
@@ -916,9 +920,10 @@ async function render(navigated = false) {
   const token = ++renderToken;
   const hash = location.hash.replace(/^#/, "") || "/";
   const [, top = "", ...rest] = hash.split("/");
-  for (const a of document.querySelectorAll(".tabs a")) a.classList.toggle("on", a.dataset.tab === ({ "": "overview", modules: "modules", m: "modules", queue: "queue", compare: "compare", c: "compare", cp: "compare" })[top]);
+  const tabOf: Record<string, string> = { "": "overview", modules: "modules", m: "modules", queue: "queue", compare: "compare", c: "compare", cp: "compare" };
+  for (const a of document.querySelectorAll<HTMLAnchorElement>(".tabs a")) a.classList.toggle("on", a.dataset.tab === tabOf[top]);
   if (!app.firstChild) app.replaceChildren(h("div", { class: "loading" }, "Loading…"));
-  let view;
+  let view: HTMLElement;
   let title = "reverser progress graph";
   try {
     if (top === "") view = await overview();
@@ -939,7 +944,7 @@ async function render(navigated = false) {
       view = await counterpartPage(game, id);
     } else view = h("div", { class: "error" }, `Unknown page "${hash}".`);
   } catch (error) {
-    view = h("div", { class: "error" }, error.message);
+    view = h("div", { class: "error" }, error instanceof Error ? error.message : String(error));
   }
   if (token !== renderToken) return;
   app.replaceChildren(view);
@@ -949,7 +954,7 @@ async function render(navigated = false) {
 
 async function poll() {
   try {
-    const { version } = await getJSON("/api/version");
+    const { version } = await getJSON<{ version: string }>("/api/version");
     live.classList.remove("down");
     live.title = "Live: refreshes when progress.json or the call graph changes";
     if (state.version !== null && version !== state.version) {
@@ -962,14 +967,14 @@ async function poll() {
     state.version = version;
   } catch (error) {
     live.classList.add("down");
-    live.title = `Not reachable: ${error.message}`;
+    live.title = `Not reachable: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
 // any address the module tool accepts: the detail page shows how it was read, or the graph's explanation of a miss
-document.getElementById("jump").addEventListener("submit", (e) => {
+document.getElementById("jump")!.addEventListener("submit", (e: Event) => {
   e.preventDefault();
-  const input = document.getElementById("jump-input");
+  const input = document.getElementById("jump-input") as HTMLInputElement;
   const q = input.value.trim();
   if (!q) return;
   input.value = "";
@@ -979,8 +984,8 @@ document.getElementById("jump").addEventListener("submit", (e) => {
 
 window.addEventListener("hashchange", () => render(true));
 // compare mode is fixed for the life of the server: ask once
-state.compare = await getJSON("/api/compare/summary").catch(() => null);
-document.getElementById("compare-tab").hidden = !state.compare;
+state.compare = await getJSON<CompareSummary>("/api/compare/summary").catch(() => null);
+(document.getElementById("compare-tab") as HTMLElement).hidden = !state.compare;
 await poll();
 await render();
 setInterval(poll, POLL_MS);

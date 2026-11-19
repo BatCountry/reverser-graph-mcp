@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { adviceFor, unresolvedReason } from "../graph/indirect.js";
+import { adviceFor, POINTER_TARGET_ADVICE, unresolvedReason } from "../graph/indirect.js";
 import { sameCodeText, treeName, urisOf, workUnitLine, workUnitState, type Context, type DisasmUris } from "../graph/tools.js";
 import { getSameCode, getWorkPlan, implementedNodes, nodeLines } from "../graph/workplan-cache.js";
 import { DEFAULT_WORK_UNIT_OPTIONS, parseWorkUnitId, workUnitId, type WorkPlan, type WorkUnit } from "../graph/workunits.js";
@@ -19,6 +19,7 @@ export type NextWorkResult = { ok: true; output: NextWorkOutput } | { ok: false;
 
 const INLINE_MEMBERS = 30;
 const INLINE_DEPENDENCIES = 12;
+const INLINE_CALLS_BACK = 3;
 /** Rows in disasm://work-plan. */
 export const WORK_PLAN_ROWS = 100;
 
@@ -109,10 +110,18 @@ function describeUnit(ctx: Context, plan: WorkPlan, unit: WorkUnit): string {
   if (unit.complete) return [...parts, "Already complete: every function in it is implemented."].join(" ");
   const deps = unit.dependsOn.length;
   const waiting = unit.dependsOn.filter((d) => !plan.units.get(d)?.complete).length;
-  const known = unit.indirectCalls.length ? " else" : "";
+  const known = unit.indirectCalls.length || unit.callsBack.length ? " else" : "";
   if (deps === 0) parts.push(`Ready: it calls nothing${known} outside itself, so it can be written and tested on its own.`);
   else if (waiting === 0) parts.push(`Ready: all ${plural(deps, "work unit")} it calls are complete.`);
   else parts.push(`Waiting on ${waiting} of ${plural(deps, "work unit")} it calls (readiness ${percentDown(unit.readiness)}): stub those calls or do them first.`);
+  if (unit.callsBack.length) {
+    const done = implementedNodes(ctx);
+    const missing = unit.callsBack.filter((id) => !done.has(id));
+    const state = missing.length
+      ? `${missing.length} not implemented yet: ${missing.slice(0, INLINE_CALLS_BACK).join(", ")}${missing.length > INLINE_CALLS_BACK ? ", … (`module` marks every callee)" : ""}`
+      : "all implemented";
+    parts.push(`It also calls ${plural(unit.callsBack.length, "procedure")} through stored pointers that cannot be written first: their work units depend on this one (${state}). Call them through the pointer, never by name; one that is missing must fail visibly.`);
+  }
   if (unit.indirectCalls.length) {
     const byAdvice = new Map<string, string[]>();
     for (const c of unit.indirectCalls) {
@@ -134,11 +143,13 @@ function nextSteps(ctx: Context, plan: WorkPlan, unit: WorkUnit): string {
   const waiting = unit.dependsOn.some((d) => !plan.units.get(d)?.complete);
   const done = implementedNodes(ctx);
   const covered = unit.members.filter((m) => done.get(m));
+  const viaPointer = unit.members.filter((m) => ctx.graph.nodes.get(m)?.kind === "function" && (ctx.graph.into.get(m) ?? []).some((e) => e.link === undefined && e.through !== undefined));
   return [
     "1. Read each member's listing through its disasm://module link, in the order above (callees first).",
     `2. Write them in one source file containing the comment \`/* Implements: ${unit.id} */\`.`,
     ...(covered.length ? [`   ${covered.join(", ")}: same code as a function already implemented; call that implementation instead of writing it again.`] : []),
     ...(waiting ? ["   Calls into incomplete work units: declare those functions and stub them for now."] : []),
+    ...(viaPointer.length ? [`   Called through stored pointers: ${viaPointer.join(", ")}. For each: ${POINTER_TARGET_ADVICE}.`] : []),
     `3. Call add_implementation with tree "${treeName(ctx.disassemblyRoot)}", module "${unit.id}", the file name and the function name: it records every function in the unit at once.`,
     "4. Call next_work again.",
   ].join("\n");

@@ -205,14 +205,16 @@ describe("listing annotations", () => {
 });
 
 describe("dashboard", () => {
-  test("sites and trace hops carry the link", () => {
+  test("sites and trace hops say when they reach another program", () => {
     const r = moduleDetail(ctx, PLAY);
     if (!r.ok) throw new Error(r.error);
-    const callees = Object.fromEntries(r.detail.callees.map((n) => [n.id, n.sites.map((s) => [s.link, s.possible])]));
-    expect(callees).toEqual({ "FMDRV_EXE:047c": [["interrupt", false]], "PCMDRV_EXE:0300": [["interrupt", true]], [HELP]: [[null, false]] });
+    // [reaches another program, only a hook record says so]
+    const how = (t: string) => [t.includes("calls into another program (interrupt)"), t.includes("(possible handler: known only from a hook record)")];
+    const callees = Object.fromEntries(r.detail.callees.map((n) => [n.id, n.sites.map((s) => how(s.text))]));
+    expect(callees).toEqual({ "FMDRV_EXE:047c": [[true, false]], "PCMDRV_EXE:0300": [[true, true]], [HELP]: [[false, false]] });
     const h = moduleDetail(ctx, HELP);
     if (!h.ok) throw new Error(h.error);
-    expect(h.detail.traces.shown.map((t) => [t.entry, t.hops.map((x) => x.link)])).toEqual([[BAT, ["runs", null, "runs", null]]]);
+    expect(h.detail.traces.shown.map((t) => [t.entry, t.hops.map((x) => x.text.includes("runs another program"))])).toEqual([[BAT, [true, false, true, false]]]);
   });
 });
 

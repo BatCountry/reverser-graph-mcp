@@ -6,7 +6,7 @@
 1. Mutually recursive functions collapse into one node.
 2. A function with exactly one caller belongs to that caller; functions with zero or several callers start their own
    unit. Calls through stored pointers that the graph resolved (edges with `through`: a dispatch table, a callback
-   variable) count neither as owning nor as a dependency, so table handlers are units of their own. Nodes with nothing
+   variable) never own, so table handlers are units of their own. Nodes with nothing
    to write (a call through an address computed at run time, an address-only node) are listed with their caller when
    they have exactly one; otherwise they belong to no unit, so no unit is ever complete before anything is implemented.
 3. A unit larger than the line budget (non-blank lines of each member's listing) is split: every owned callee that has
@@ -15,13 +15,28 @@
 4. Whatever is still over budget (typically one huge function) is flagged oversized.
 
 Recording progress never changes the partition; it marks members done. A unit is complete when every function in it
-is implemented. Incomplete units are ranked: ready ones (every unit they call is complete) first; among those, units
-that call through addresses computed at run time (`unresolved (indirect)`, e.g. a far call through a pointer table)
-last, since they need a function-pointer table whose entries are written elsewhere; then those that unblock the most
-other incomplete units, then not oversized, then fewer external callees, then size closest to the budget. Units cannot
-depend on each other in a cycle (mutual recursion is collapsed, multi-caller functions start their own unit), so while
-any work remains some incomplete unit is ready. `next_work` and `module` name each run-time call site and say how to
-translate it.
+is implemented.
+
+A unit depends on every unit its members call. A call through a stored pointer counts like a direct call, with one
+exception: when the target's unit already waits on the caller's, the program recurses through the pointer (a script
+command that runs the interpreter again), so one side has to be written first, and it is the caller. `next_work`
+names those targets ("cannot be written first: their work units depend on this one") and says how many are still
+missing. A dispatcher is therefore offered once the handlers that do not call back exist, and the handlers that do
+call back come after it. Pointer calls are checked in id order, so a cycle made only of pointer calls always breaks
+at the same call. Dependencies never form a cycle (mutual recursion is collapsed, multi-caller functions start their
+own unit, a pointer call that would close a cycle is left out), so while any work remains some incomplete unit is
+ready.
+
+Incomplete units are ranked: ready ones (every unit they depend on is complete) first; among those, units that call
+through addresses computed at run time (`unresolved (indirect)`: the graph could not name every target) last, since
+nothing can say what has to exist first; then those that unblock the most other incomplete units, then not oversized,
+then fewer external callees, then size closest to the budget. `next_work` and `module` name each run-time call site
+and say how to translate it.
+
+A function that is called through a stored pointer has no call that names it, so nothing fails to build when the
+translation forgets to make it reachable. `next_work` (under step 2) and `module` (under its hints) say so for every
+such function: register it under every address the program stores for it, and test a path that goes through the
+pointer.
 
 `next_work` returns the top unit (or, with `module`, the unit containing a node; `skip` passes over units). Resources:
 `disasm://<tree>/work-plan` (ranked queue, top 100) and `disasm://<tree>/work-unit/{id}` (one unit in full, id

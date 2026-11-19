@@ -1,11 +1,12 @@
 import path from "node:path";
 import { TTL_LONG_MS, type TtlCache } from "../cache.js";
 import { clip } from "../interrupts/render.js";
+import { formatAddress } from "../hex.js";
 import type { ProgressStore } from "../progress/store.js";
 import { listingFor } from "./files.js";
 import { stubCallText } from "./listing-targets.js";
-import { adviceFor, LINK_ADVICE, nodeEvidence, siteText, unresolvedReason } from "./indirect.js";
-import type { CallGraph, EdgeLink, GraphEdge, GraphNode } from "./model.js";
+import { adviceFor, LINK_ADVICE, nodeEvidence, POINTER_TARGET_ADVICE, siteText, unresolvedReason } from "./indirect.js";
+import type { CallGraph, EdgeCondition, EdgeLink, GraphEdge, GraphNode } from "./model.js";
 import { entrypointTraces, findPaths, type Hop, type Path } from "./paths.js";
 import { getSameCode, getWorkPlan, implementedNodes } from "./workplan-cache.js";
 import { parseWorkUnitId, type WorkPlan, type WorkUnit, type WorkUnitOptions } from "./workunits.js";
@@ -67,11 +68,12 @@ export function workUnitLine(plan: WorkPlan, unit: WorkUnit, uris: DisasmUris): 
 const INLINE_NEIGHBOURS = 8;
 const INLINE_TRACES = 3;
 
-const hex = (n: number | null, w = 4) => (n === null ? "?" : `0x${n.toString(16).padStart(w, "0")}`);
+/** A branch condition as the tools and the dashboard print it: "<offset> <direction>: <expression>". */
+export const conditionText = (c: EdgeCondition) => `${c.offset} ${c.direction}: ${c.expression}`;
 
 function describeConditions(edge: GraphEdge, max = 2): string {
   if (edge.conditions.length === 0) return "";
-  const shown = edge.conditions.slice(0, max).map((c) => `${c.offset} ${c.direction}: ${c.expression}`);
+  const shown = edge.conditions.slice(0, max).map(conditionText);
   const more = edge.conditions.length > max ? `; +${edge.conditions.length - max} more` : "";
   return ` [when ${shown.join("; ")}${more}]`;
 }
@@ -115,7 +117,7 @@ function formatPath(ctx: Context, implemented: ReadonlyMap<string, string>, p: P
 function describeNode(graph: CallGraph, node: GraphNode): string {
   const where = node.source_file ? ` in ${node.source_file}` : "";
   const space = node.space ? `, ${node.space}` : "";
-  const offs = node.file_offset === null ? "" : `, file offset ${hex(node.file_offset, 6)}`;
+  const offs = node.file_offset === null ? "" : `, file offset ${formatAddress(node.file_offset, 6)}`;
   if (node.kind === "function") {
     const evidence = nodeEvidence(node);
     const head = /\.bat$/i.test(node.source_file ?? "")
@@ -220,6 +222,10 @@ export function lookupModule(ctx: Context, args: { module: string }): ModuleResu
   if (plain > 0) hints.push(`- Understand what it depends on first: the ${plain} callee(s) above${links.length ? " that are not links to other programs" : ""}; implement leaves before callers.`);
   if (callees.some((c) => c.edges.some((e) => e.link === undefined && e.through !== undefined && ctx.graph.nodes.get(e.target)?.kind === "function"))) {
     hints.push("- Callees reached `through` a variable or table are the procedures the program stores there: implement each such call as a call through a pointer that can hold exactly those procedures.");
+  }
+  const pointerSites = node.kind === "function" ? callers.flatMap((c) => c.edges).filter((e) => e.link === undefined && e.through !== undefined) : [];
+  if (pointerSites.length) {
+    hints.push(`- It is called through a stored pointer (${siteText(pointerSites[0]!)}${pointerSites.length > 1 ? `, and ${pointerSites.length - 1} more` : ""}): ${POINTER_TARGET_ADVICE}.`);
   }
   for (const c of unresolved) {
     const reason = unresolvedReason(ctx.graph.nodes.get(c.node));

@@ -11,7 +11,8 @@ import { dashboardVersion, moduleDetail, moduleRows, summary, unitRows } from ".
 import { comparePair, compareSummary, counterpartView } from "../dashboard/compare.js";
 import type { Context } from "../graph/tools.js";
 
-// One listener on 127.0.0.1: MCP over streamable HTTP at /mcp, the progress dashboard (static page in web/ plus a
+// One listener on 127.0.0.1: MCP over streamable HTTP at /mcp, the progress dashboard (index.html and app.css from
+// web/, its script compiled from src/web/app.ts into build/, plus a
 // read-only JSON API under /api/) everywhere else. Every request must carry a localhost Host (and, from a browser,
 // Origin) header, so a foreign page that rebinds its own hostname to 127.0.0.1 cannot reach the tools.
 
@@ -21,8 +22,11 @@ export interface HttpOptions {
   mcp: McpServerFactory;
   /** shared graph/progress state; throws when the disassembly tree cannot be loaded */
   context: () => Context;
-  /** directory holding index.html, app.js, app.css */
+  /** directory holding index.html and app.css */
   webRoot: string;
+  /** the compiled server (build/): web/app.js, the dashboard script compiled from src/web/app.ts, and the modules it
+   * imports */
+  buildRoot: string;
   onerror: (error: Error) => void;
   /** compare mode (--compare): the correspondence behind /api/compare/* */
   compare?: (() => Correspondence) | undefined;
@@ -36,11 +40,15 @@ export interface RunningHttp {
   close: () => Promise<void>;
 }
 
-const STATIC: Record<string, { file: string; type: string }> = {
-  "/": { file: "index.html", type: "text/html; charset=utf-8" },
-  "/index.html": { file: "index.html", type: "text/html; charset=utf-8" },
-  "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
-  "/app.css": { file: "app.css", type: "text/css; charset=utf-8" },
+/** URL -> file under webRoot ("web") or buildRoot ("build"). The compiled app imports ../percent.js and ../hex.js, so
+ * /app.js and those modules keep that relative layout. */
+const STATIC: Record<string, { root: "web" | "build"; file: string; type: string }> = {
+  "/": { root: "web", file: "index.html", type: "text/html; charset=utf-8" },
+  "/index.html": { root: "web", file: "index.html", type: "text/html; charset=utf-8" },
+  "/app.css": { root: "web", file: "app.css", type: "text/css; charset=utf-8" },
+  "/app.js": { root: "build", file: "web/app.js", type: "text/javascript; charset=utf-8" },
+  "/percent.js": { root: "build", file: "percent.js", type: "text/javascript; charset=utf-8" },
+  "/hex.js": { root: "build", file: "hex.js", type: "text/javascript; charset=utf-8" },
 };
 
 /** Loopback only: whoever reaches the port can call add_implementation and annotate. */
@@ -134,7 +142,7 @@ export async function startHttp(options: HttpOptions): Promise<RunningHttp> {
       }
       const asset = STATIC[pathname];
       if (!asset) return send(res, 404, "text/plain; charset=utf-8", "Not found. The dashboard is at /, MCP at /mcp.");
-      return send(res, 200, asset.type, await readFile(path.join(options.webRoot, asset.file)));
+      return send(res, 200, asset.type, await readFile(path.join(asset.root === "web" ? options.webRoot : options.buildRoot, asset.file)));
     })().catch((error: unknown) => {
       options.onerror(error instanceof Error ? error : new Error(String(error)));
       if (!res.headersSent) json(res, 500, { error: "Internal error; see the server log." });

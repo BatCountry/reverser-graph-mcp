@@ -98,6 +98,71 @@ describe("calls through addresses computed at run time", () => {
   });
 });
 
+describe("calls through stored pointers", () => {
+  const SITE = "module-0005:0003";
+  const stored = (source: string, target: string, site = SITE, more: object = {}) => ({ source, target, instruction: "lcall [di + 0x1200]", instruction_offset: site, returns: true, conditions: [], through: "ds:[index+1200]", ...more });
+  const direct = (source: string, target: string, site: string) => ({ source, target, instruction: "lcall 0x2000, 0x1", instruction_offset: site, returns: true, conditions: [] });
+  /** The fixture graph plus `edges`, and nodes `added` (id -> kind) shaped like Z. */
+  const withEdges = (edges: object[], added: Record<string, string> = {}): Context => {
+    const g = graphJson();
+    const nodes = Object.fromEntries(Object.entries(added).map(([id, kind]) => [id, { ...g.nodes[IDS.Z]!, id, kind, listing: null }]));
+    return { ...ctx, graph: new CallGraph({ ...g, nodes: { ...g.nodes, ...nodes }, edges: [...g.edges, ...edges] as typeof g.edges }) };
+  };
+  const module = (id: string) => {
+    const m = lookupModule(ctx, { module: id });
+    if (!m.ok) throw new Error(m.error);
+    return m.output;
+  };
+  const NAMED = "Called through stored pointers";
+  const HINT = "It is called through a stored pointer";
+
+  test("next_work waits on a target that can be written first and names one that cannot", () => {
+    // Z (called by R2 and C) dispatches to D, a leaf, and to C, whose work unit waits on Z
+    ctx = withEdges([direct(IDS.R2, IDS.Z, "MAIN-root:0108"), direct(IDS.C, IDS.Z, "module-0002:0036"), stored(IDS.Z, IDS.C), stored(IDS.Z, IDS.D)]);
+    const back = "It also calls 1 procedure through stored pointers that cannot be written first: their work units depend on this one";
+    const o = ok({ module: IDS.Z });
+    expect(o.summary).toContain("Waiting on 1 of 1 work unit it calls (readiness 0%)");
+    expect(o.summary).toContain(`${back} (1 not implemented yet: ${IDS.C}). Call them through the pointer, never by name; one that is missing must fail visibly.`);
+    expect(o.dependencies).toContain(`- ${W.D} (incomplete) — calls ${IDS.D} — `);
+    expect(o.dependencies).not.toContain(W.C);
+    record([IDS.D]);
+    expect(ok({ module: IDS.Z }).summary).toContain("Ready: all 1 work unit it calls are complete.");
+    record([IDS.C]);
+    expect(ok({ module: IDS.Z }).summary).toContain(`${back} (all implemented).`);
+  });
+  test("a unit with only such targets is ready but not called dependency-free; three are named, a fourth is behind module", () => {
+    const targets = ["module-0006:0001", "module-0006:0002", "module-0006:0003", "module-0006:0004"];
+    const around = (ids: string[]) => withEdges(ids.flatMap((t, i) => [direct(t, IDS.Z, `module-0006:010${i}`), stored(IDS.Z, t)]), Object.fromEntries(ids.map((t) => [t, "function"])));
+    ctx = around(targets.slice(0, 3));
+    const three = ok({ module: IDS.Z }).summary;
+    expect(three).toContain("Ready: it calls nothing else outside itself");
+    expect(three).toContain(`It also calls 3 procedures through stored pointers that cannot be written first: their work units depend on this one (3 not implemented yet: ${targets.slice(0, 3).join(", ")}).`);
+    ctx = around(targets);
+    expect(ok({ module: IDS.Z }).summary).toContain(`(4 not implemented yet: ${targets.slice(0, 3).join(", ")}, … (\`module\` marks every callee)).`);
+  });
+  test("a function called through a stored pointer is told to register itself, by next_work and by module", () => {
+    expect(ok({ module: IDS.D }).next_steps).not.toContain(NAMED);
+    expect(module(IDS.D).tool_hint).not.toContain(HINT);
+    ctx = withEdges([stored(IDS.Z, IDS.D)]);
+    expect(ok({ module: IDS.D }).next_steps).toContain(
+      `\n   ${NAMED}: ${IDS.D}. For each: no call names it, so register it in your table of function pointers under every address the program stores for it (the Evidence lines of \`module\` name each store); a missing entry fails only when that path runs, so test a path that goes through the pointer.\n3. `,
+    );
+    expect(module(IDS.D).tool_hint).toContain(`- ${HINT} (\`lcall [di + 0x1200]\` at ${SITE} through ds:[index+1200]): no call names it, so register it in your table of function pointers`);
+    ctx = withEdges([stored(IDS.Z, IDS.D), stored(IDS.R2, IDS.D, "MAIN-root:0108")]);
+    expect(module(IDS.D).tool_hint).toContain(`at ${SITE} through ds:[index+1200], and 1 more): no call names it`);
+  });
+  test("not for a link from another program, nor for a member that is no function", () => {
+    ctx = withEdges([stored(IDS.Z, IDS.D, SITE, { link: "interrupt" })]);
+    expect(ok({ module: IDS.D }).next_steps).not.toContain(NAMED);
+    expect(module(IDS.D).tool_hint).not.toContain(HINT);
+    const address = "module-0005:0099";
+    ctx = withEdges([stored(IDS.Z, address)], { [address]: "address" });
+    expect(ok({ module: IDS.Z }).members).toContain(`- ${address} — `);
+    expect(ok({ module: IDS.Z }).next_steps).not.toContain(NAMED);
+    expect(module(address).tool_hint).not.toContain(HINT);
+  });
+});
+
 describe("next_work picks the top-ranked unit", () => {
   test("ready unit that unblocks the most comes first, with its whole story", () => {
     const o = ok({});

@@ -67,6 +67,12 @@ export function formatHex(n: number, width = 2): string {
   return `0x${n.toString(16).toUpperCase().padStart(width, "0")}`;
 }
 
+/** An address or file offset as listings, tools and the dashboard print it: 0x1a2c, lowercase, zero padded; "?" when
+ * the node has none. The dashboard page imports this module too (served at /hex.js): keep it free of imports. */
+export function formatAddress(n: number | null | undefined, width = 4): string {
+  return n === null || n === undefined ? "?" : `0x${n.toString(16).padStart(width, "0")}`;
+}
+
 /** Hex without prefix, uppercase, zero padded: used in resource URIs. */
 export function hexKey(n: number, width = 2): string {
   return n.toString(16).toUpperCase().padStart(width, "0");

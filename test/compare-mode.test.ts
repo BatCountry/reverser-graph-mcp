@@ -402,7 +402,7 @@ describe("HTTP /api/compare", () => {
   beforeAll(async () => {
     fx = { a: c.a.disassemblyRoot };
     const ctx: Context = { graph: c.a.graph, disassemblyRoot: fx.a, progress: new ProgressStore(path.join(tempRoot("rpg-cmode-"), "alpha.progress.json")), cache: new TtlCache() };
-    const base = { port: 0, mcp: () => new McpServer({ name: "t", version: "0" }), context: () => ctx, webRoot: path.resolve("web"), onerror: () => {} };
+    const base = { port: 0, mcp: () => new McpServer({ name: "t", version: "0" }), context: () => ctx, webRoot: path.resolve("web"), buildRoot: path.resolve("build"), onerror: () => {} };
     http = await startHttp({ ...base, compare: () => c });
     off = await startHttp(base);
     failing = await startHttp({

@@ -126,7 +126,7 @@ describe("graph shapes the generated tree rarely has", () => {
 
   test("neighbours outside the graph and run-time targets are named, without a status", () => {
     ctx = odd();
-    const plain = (at: string) => ({ instruction: "call 0x1", at, conditions: [], through: null, possible: false, link: null });
+    const plain = (at: string) => ({ text: `\`call 0x1\` at ${at}`, conditions: [] });
     expect(detail(LOOSE).callees).toEqual([{ id: "never-defined", kind: "unknown", status: null, sameCodeAs: null, sites: [plain("x"), plain("y")], reason: null }]);
     const z = detail(IDS.Z);
     // an older tree's unknown target carries no reason: the default explanation stands in
@@ -158,8 +158,8 @@ describe("graph shapes the generated tree rarely has", () => {
     };
     const b = detail(IDS.B);
     expect(b).toMatchObject({ provisional: true, evidence: ["far pointer built at X"], reason: null });
-    const site = b.callers.find((n) => n.id === IDS.R)!.sites.find((s) => s.at === "MAIN-root:0200");
-    expect(site).toEqual({ instruction: "lcall [0x6a78]", at: "MAIN-root:0200", conditions: [], through: "ds:[6a78]", possible: true, link: null });
+    const site = b.callers.find((n) => n.id === IDS.R)!.sites.find((s) => s.text.includes("MAIN-root:0200"));
+    expect(site).toEqual({ text: "`lcall [0x6a78]` at MAIN-root:0200 through ds:[6a78] (possible target: only the record field offset matches)", conditions: [] });
     expect(detail(IDS.R).callees.find((n) => n.id === unknown)!.reason).toBe("nothing stores a constant pointer into ds:[0100]");
     expect(detail(unknown)).toMatchObject({ reason: "nothing stores a constant pointer into ds:[0100]", evidence: [], provisional: false });
   });
@@ -199,8 +199,8 @@ describe("moduleDetail", () => {
   test("a node name: listing with call targets, neighbours with sites and conditions, its work unit", () => {
     const d = detail(IDS.A);
     expect(d).toMatchObject({ id: IDS.A, note: null, kind: "function", space: "module-0001", address: 0x10, lines: 6, status: "waiting" });
-    expect(d.listing).toContain(`; → ${IDS.B}`);
-    expect(d.callers).toEqual([{ id: IDS.R, kind: "function", status: "waiting", sameCodeAs: null, reason: null, sites: [{ instruction: "lcall 0x2000, 0x0010", at: "MAIN-root:0010", conditions: [], through: null, possible: false, link: null }] }]);
+    expect(d.listing!.lines.some((l) => l.notes.some((n) => n.label === "→" && n.targets.includes(IDS.B)))).toBe(true);
+    expect(d.callers).toEqual([{ id: IDS.R, kind: "function", status: "waiting", sameCodeAs: null, reason: null, sites: [{ text: "`lcall 0x2000, 0x0010` at MAIN-root:0010", conditions: [] }] }]);
     expect(d.callees.find((n) => n.id === IDS.B)!.sites[0]!.conditions).toEqual(["module-0001:0011 taken: ZF=1"]);
     expect(d.unit).toMatchObject({ id: `work:${IDS.R}`, members: 3, state: "waiting", rank: expect.any(Number) });
     expect(d.unit!.memberList.map((m) => m.id)).toEqual([IDS.R, IDS.A, IDS.B]);
@@ -216,7 +216,7 @@ describe("moduleDetail", () => {
   });
 
   test("traces back to entrypoints: nearest first, with every call site on the way", () => {
-    const hop = (to: string, at: string, conditions: string[] = []) => ({ to, at, instruction: `lcall 0x2000, 0x${to.split(":")[1]}`, through: null, possible: false, link: null, conditions, otherSites: 0 });
+    const hop = (to: string, at: string, conditions: string[] = []) => ({ to, text: `\`lcall 0x2000, 0x${to.split(":")[1]}\` at ${at}`, conditions, otherSites: 0 });
     expect(detail(IDS.D).traces).toEqual({
       total: 2,
       targetIsRoot: false,
@@ -247,7 +247,7 @@ describe("moduleDetail", () => {
     const t = detail(IDS.Z).traces;
     expect(t).toMatchObject({ total: MODULE_PAGE_TRACES + 2, targetIsRoot: false });
     expect(t.shown).toHaveLength(MODULE_PAGE_TRACES);
-    expect(t.shown[0]).toEqual({ entry: entries[0], hops: [{ to: IDS.Z, at: entries[0], instruction: "lcall [0x100]", through: "ds:[0100]", possible: true, link: null, conditions: [], otherSites: 1 }] });
+    expect(t.shown[0]).toEqual({ entry: entries[0], hops: [{ to: IDS.Z, text: `\`lcall [0x100]\` at ${entries[0]} through ds:[0100] (possible target: only the record field offset matches)`, conditions: [], otherSites: 1 }] });
   });
 
   test("implementations and annotations of this node only", () => {

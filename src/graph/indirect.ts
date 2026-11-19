@@ -8,6 +8,10 @@ import type { EdgeLink, GraphEdge, GraphNode } from "./model.js";
 export const INDIRECT_CALL_ADVICE =
   "implement each such call as a lookup in a table of function pointers keyed by the far address (seg:off) the program stores; register functions in it as they are implemented (`module` resolves a stored seg:off to its function), and make an address missing from the table fail visibly";
 
+/** What a function called through stored pointers needs beyond being written. */
+export const POINTER_TARGET_ADVICE =
+  "no call names it, so register it in your table of function pointers under every address the program stores for it (the Evidence lines of `module` name each store); a missing entry fails only when that path runs, so test a path that goes through the pointer";
+
 const CHAIN = /previous INT ([0-9A-F]{2})h handler/;
 
 /** Advice for one unresolved transfer, by why it is unresolved. */

@@ -1,11 +1,11 @@
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { listingFor } from "../graph/files.js";
-import { nodeEvidence, unresolvedReason } from "../graph/indirect.js";
-import { annotateCallTargets } from "../graph/listing-targets.js";
-import type { EdgeLink, GraphEdge } from "../graph/model.js";
+import { nodeEvidence, siteText, unresolvedReason } from "../graph/indirect.js";
+import { annotateListing, type AnnotatedListing } from "../graph/listing-targets.js";
+import type { GraphEdge } from "../graph/model.js";
 import { entrypointTraces } from "../graph/paths.js";
-import { urisOf, type Context } from "../graph/tools.js";
+import { conditionText, urisOf, type Context } from "../graph/tools.js";
 import { getSameCode, getWorkPlan, implementedNodes, nodeLines } from "../graph/workplan-cache.js";
 import { parseWorkUnitId, type WorkPlan, type WorkUnit } from "../graph/workunits.js";
 import type { AnnotationRecord, ImplementationRecord } from "../progress/store.js";
@@ -85,8 +85,8 @@ export interface Neighbour {
   status: FunctionStatus | null;
   /** implemented through this same-code peer's record; null otherwise */
   sameCodeAs: string | null;
-  /** `link`: the site reaches another program (runs it, reads its file, raises an interrupt it answers); null for a call or jump */
-  sites: Array<{ instruction: string; at: string; conditions: string[]; through: string | null; possible: boolean; link: EdgeLink | null }>;
+  /** each call site as the module tool words it (what it read through, a link to another program, "possible" caveats) */
+  sites: Array<{ text: string; conditions: string[] }>;
   /** unknown-target: why the graph cannot name it */
   reason: string | null;
 }
@@ -101,12 +101,8 @@ export interface UnitDetail extends UnitRow {
 /** One call along a trace: the site in the previous function and the function it reaches. */
 export interface TraceHop {
   to: string;
-  at: string;
-  instruction: string;
-  through: string | null;
-  possible: boolean;
-  /** the hop crosses into another program (see Neighbour sites); null for a call or jump */
-  link: EdgeLink | null;
+  /** the call site as the module tool words it */
+  text: string;
   conditions: string[];
   /** further call sites between the same two functions */
   otherSites: number;
@@ -153,8 +149,8 @@ export interface ModuleDetail {
   unit: UnitDetail | null;
   /** how the program reaches it: the nearest entrypoints' call chains */
   traces: Traces;
-  /** the listing with `; → <node>` call targets, as the listing resource serves it */
-  listing: string | null;
+  /** the listing with each line's call targets and links, structured (the listing resource serves the same as text) */
+  listing: AnnotatedListing | null;
   /** that resource's URI (`disasm://<tree>/listing/<id>`), null when there is no listing */
   listingUri: string | null;
 }
@@ -331,16 +327,7 @@ function tracesTo(ctx: Context, id: string): Traces {
       entry: t.nodes[0]!,
       hops: t.hops.map((h) => {
         const e = h.edges[0]!; // the trace walked this edge backwards, so every hop has one
-        return {
-          to: h.to,
-          at: e.instruction_offset,
-          instruction: e.instruction,
-          through: typeof e.through === "string" ? e.through : null,
-          possible: e.provisional === true,
-          link: e.link ?? null,
-          conditions: e.conditions.map((c) => `${c.offset} ${c.direction}: ${c.expression}`),
-          otherSites: h.edges.length - 1,
-        };
+        return { to: h.to, text: siteText(e), conditions: e.conditions.map(conditionText), otherSites: h.edges.length - 1 };
       }),
     })),
   };
@@ -356,14 +343,7 @@ function neighbours(ctx: Context, plan: WorkPlan, done: ReadonlyMap<string, stri
       const kind = target?.kind ?? "unknown";
       byNode.set(id, (n = { id, kind, status: kind === "function" ? functionStatus(plan, done, id) : null, sameCodeAs: done.get(id) || null, sites: [], reason: kind === "unknown-target" ? unresolvedReason(target) : null }));
     }
-    n.sites.push({
-      instruction: e.instruction,
-      at: e.instruction_offset,
-      conditions: e.conditions.map((c) => `${c.offset} ${c.direction}: ${c.expression}`),
-      through: typeof e.through === "string" ? e.through : null,
-      possible: e.provisional === true,
-      link: e.link ?? null,
-    });
+    n.sites.push({ text: siteText(e), conditions: e.conditions.map(conditionText) });
   }
   return [...byNode.values()];
 }
@@ -397,11 +377,11 @@ export function moduleDetail(ctx: Context, raw: string): { ok: true; detail: Mod
       }
     : null;
 
-  let listing: string | null = null;
+  let listing: AnnotatedListing | null = null;
   const file = listingFor(ctx.disassemblyRoot, node);
   if (file) {
     try {
-      listing = annotateCallTargets(ctx.graph, node, readFileSync(file.absPath, "utf8"));
+      listing = annotateListing(ctx.graph, node, readFileSync(file.absPath, "utf8"));
     } catch {
       listing = null;
     }

@@ -135,8 +135,15 @@ If a worker says a unit is blocked by unimplemented callees, or wants to defer i
 do not accept it. Make it check its work: call `next_work` with `module` set to the unit and read the Dependencies
 section. For a unit offered as ready it says the unit calls nothing outside itself, or that every unit it calls is
 complete. A "missing" callee listed under Members is part of the same unit and gets written in the same file. Calls
-into other programs (`⇒` links) are never dependencies. The only targets the graph cannot name are calls through
-run-time addresses, and those are implemented with a function-pointer table (above), not deferred.
+into other programs (`⇒` links) are never dependencies. A procedure the unit calls through a stored pointer is a
+dependency like any other, except those `next_work` lists as "cannot be written first": they need this unit, so this
+unit goes first and reaches them through the function-pointer table. The only targets the graph cannot name are
+calls through run-time addresses, and those are implemented with a function-pointer table (above), not deferred.
+
+A function is not finished until everything that calls it can reach it. When `next_work` or `module` says a function
+is called through a stored pointer, check that it is registered in the function-pointer table under every address the
+program stores for it, and that a test goes through the pointer: nothing calls such a function by name, so a missing
+registration builds cleanly and fails only when that path runs.
 
 ## What not to trust
 

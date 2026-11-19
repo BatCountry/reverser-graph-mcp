@@ -16,6 +16,8 @@ import { ProgressStore } from "../src/progress/store.js";
 import { IDS, makeFixture, type Fixture } from "./fixture.js";
 
 const WEB = path.resolve("web");
+// npm test runs tsc first, so the compiled dashboard script is in build/
+const BUILD = path.resolve("build");
 
 /** Raw request so Host/Origin can be set freely (fetch forbids overriding Host). */
 function raw(url: string, opts: { method?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; type: string; body: string }> {
@@ -54,6 +56,7 @@ describe("startHttp (in process)", () => {
         return ctx;
       },
       webRoot: WEB,
+      buildRoot: BUILD,
       onerror: (e) => errors.push(e),
     });
   });
@@ -62,14 +65,14 @@ describe("startHttp (in process)", () => {
   });
 
   test("serves the page and its assets with their types", async () => {
-    for (const [p, type] of [["/", "text/html"], ["/index.html", "text/html"], ["/app.js", "text/javascript"], ["/app.css", "text/css"]] as const) {
+    for (const [p, type] of [["/", "text/html"], ["/index.html", "text/html"], ["/app.js", "text/javascript"], ["/percent.js", "text/javascript"], ["/app.css", "text/css"]] as const) {
       const r = await raw(`${http.url}${p}`);
       expect(r.status, p).toBe(200);
       expect(r.type).toContain(type);
     }
   });
 
-  test.each(["/nope", "/web/app.js", "/../package.json", "/%2e%2e/package.json", "/app.js/", "/index.htm"])("only the listed assets are served: %s", async (p) => {
+  test.each(["/nope", "/web/app.js", "/web/app.ts", "/build/percent.js", "/index.js", "/../package.json", "/%2e%2e/package.json", "/app.js/", "/index.htm"])("only the listed assets are served: %s", async (p) => {
     expect((await raw(`${http.url}${p}`)).status).toBe(404);
   });
 
@@ -143,13 +146,14 @@ describe("startHttp (in process)", () => {
 
   test("a port in use rejects instead of serving nothing", async () => {
     const port = Number(new URL(http.url).port);
-    await expect(startHttp({ port, mcp: tinyServer, context: () => { throw new Error("unused"); }, webRoot: WEB, onerror: () => {} })).rejects.toThrow(/EADDRINUSE/);
+    await expect(startHttp({ port, mcp: tinyServer, context: () => { throw new Error("unused"); }, webRoot: WEB, buildRoot: BUILD, onerror: () => {} })).rejects.toThrow(/EADDRINUSE/);
   });
 });
 
 test("a missing asset file is a 500 and reported", async () => {
   const errors: Error[] = [];
-  const http = await startHttp({ port: 0, mcp: tinyServer, context: () => { throw new Error("unused"); }, webRoot: mkdtempSync(path.join(tmpdir(), "rpg-web-")), onerror: (e) => errors.push(e) });
+  const empty = mkdtempSync(path.join(tmpdir(), "rpg-web-"));
+  const http = await startHttp({ port: 0, mcp: tinyServer, context: () => { throw new Error("unused"); }, webRoot: empty, buildRoot: empty, onerror: (e) => errors.push(e) });
   try {
     const r = await raw(`${http.url}/app.js`);
     expect(r.status).toBe(500);

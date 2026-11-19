@@ -52,7 +52,7 @@ describe("partition", () => {
     expect(partition(p)).toEqual({ "work:R": ["R", "A"] });
     expect(unit(p, "R").externalCallees).toEqual([]);
   });
-  test("calls through stored pointers neither own nor order units: a dispatcher and its handlers stay apart", () => {
+  test("calls through stored pointers never own units: a dispatcher and its handlers stay apart", () => {
     // R calls dispatcher D, which reaches H through a table; H calls back into D (an interpreter); K is D's own callee
     const g = graphOf([["R", "D"], ["D", "K"], ["H", "D"]]);
     const blank = { space: "m", address: 0, file_offset: 0, source_file: null, listing: null, entrypoint: false };
@@ -68,8 +68,8 @@ describe("partition", () => {
     });
     const p = buildWorkPlan(withPointer, new Set(), () => 10, OPTS);
     expect(partition(p)).toEqual({ "work:R": ["R"], "work:H": ["H"], "work:D": ["D", "K", "U"] });
-    expect(unit(p, "D")).toMatchObject({ dependsOn: [], externalCallees: [] });
-    expect(unit(p, "H")).toMatchObject({ dependsOn: ["work:D"], externalCallees: ["D"] });
+    expect(unit(p, "D")).toMatchObject({ dependsOn: [], externalCallees: [], callsBack: ["H"] });
+    expect(unit(p, "H")).toMatchObject({ dependsOn: ["work:D"], externalCallees: ["D"], callsBack: [] });
   });
   test("mutual recursion stays in one unit: owned by its single caller", () => {
     const p = plan([["R", "X"], ["X", "Y"], ["Y", "X"], ["Y", "Z"]]);
@@ -194,9 +194,66 @@ describe("progress", () => {
   });
 });
 
+describe("calls through stored pointers order units", () => {
+  type Pair = [string, string];
+  /** `direct` are ordinary calls; each of `pointers` is a call through ds:[1200], with `more` added to its edge. */
+  const pointerPlan = (direct: Pair[], pointers: Pair[], opts: { implemented?: string[]; more?: object } = {}): WorkPlan => {
+    const g = graphOf([...direct, ...pointers]);
+    const stored = pointers.map(([source, target]) => ({ source, target, instruction: "lcall [0x1200]", instruction_offset: source, returns: true, conditions: [], through: "ds:[1200]", ...opts.more }));
+    return buildWorkPlan(new CallGraph({ aliases: {}, nodes: Object.fromEntries(g.nodes), edges: [...g.edges.slice(0, direct.length), ...stored] }), new Set(opts.implemented ?? []), () => 10, OPTS);
+  };
+
+  test("a pointer call waits on its target like a direct call", () => {
+    const p = pointerPlan([], [["D", "H"]]);
+    expect(partition(p)).toEqual({ "work:D": ["D"], "work:H": ["H"] });
+    expect(unit(p, "D")).toMatchObject({ dependsOn: ["work:H"], externalCallees: ["H"], callsBack: [], readiness: 0, unblocks: 0 });
+    expect(unit(p, "H")).toMatchObject({ dependsOn: [], readiness: 1, unblocks: 1 });
+    expect(p.ranked.map((u) => u.id)).toEqual(["work:H", "work:D"]);
+    expect(unit(pointerPlan([], [["D", "H"]], { implemented: ["H"] }), "D").readiness).toBe(1);
+    // a possible target (matched by record field only) is waited on too
+    expect(unit(pointerPlan([], [["D", "H"]], { more: { provisional: true } }), "D").dependsOn).toEqual(["work:H"]);
+  });
+  test("several sites and a direct call to the same target make one dependency", () => {
+    const p = pointerPlan([["D", "H"], ["Q", "H"]], [["D", "H"], ["D", "H"]]);
+    expect(unit(p, "D")).toMatchObject({ dependsOn: ["work:H"], externalCallees: ["H"], callsBack: [] });
+  });
+  test("a dispatcher waits on the handlers that do not call back and comes before those that do", () => {
+    // D dispatches to L (a leaf) and to H, which runs the dispatcher again
+    const p = pointerPlan([["R", "D"], ["H", "D"]], [["D", "L"], ["D", "H"], ["D", "H"]]);
+    expect(unit(p, "D")).toMatchObject({ dependsOn: ["work:L"], externalCallees: ["L"], callsBack: ["H"], readiness: 0, unblocks: 2 });
+    expect(unit(p, "H")).toMatchObject({ dependsOn: ["work:D"], callsBack: [] });
+    expect(p.ranked.map((u) => u.id).slice(0, 2)).toEqual(["work:L", "work:D"]);
+  });
+  test("a target that reaches the caller only through other units is no dependency either", () => {
+    // H -> M -> D, each its own unit (M and D have two callers); T's two callees share Z, visited once
+    const p = pointerPlan([["H", "M"], ["X", "M"], ["M", "D"], ["R", "D"], ["T", "A"], ["T", "B"], ["W", "A"], ["W", "B"], ["A", "Z"], ["B", "Z"]], [["D", "H"], ["P", "T"]]);
+    expect(unit(p, "D")).toMatchObject({ dependsOn: [], callsBack: ["H"] });
+    expect(unit(p, "P")).toMatchObject({ dependsOn: ["work:T"], callsBack: [] });
+  });
+  test("a cycle made only of pointer calls breaks at the same call whatever order the graph lists them in", () => {
+    for (const pointers of [[["A", "B"], ["B", "C"], ["C", "A"]], [["C", "A"], ["B", "C"], ["A", "B"]]] as Pair[][]) {
+      const p = pointerPlan([], pointers);
+      expect(unit(p, "A")).toMatchObject({ dependsOn: ["work:B"], callsBack: [] });
+      expect(unit(p, "B")).toMatchObject({ dependsOn: ["work:C"], callsBack: [] });
+      expect(unit(p, "C")).toMatchObject({ dependsOn: [], callsBack: ["A"] });
+      expect(p.ranked.map((u) => u.id)).toEqual(["work:C", "work:B", "work:A"]);
+    }
+  });
+  test("nothing to wait on: a target in the caller's own unit, a link, a node that is no function or not in the graph", () => {
+    const own = pointerPlan([["R", "A"]], [["R", "A"]]);
+    expect(partition(own)).toEqual({ "work:R": ["R", "A"] });
+    expect(unit(own, "R")).toMatchObject({ dependsOn: [], externalCallees: [], callsBack: [] });
+    expect(unit(pointerPlan([], [["P", "Q"]], { more: { link: "interrupt" } }), "P")).toMatchObject({ dependsOn: [], externalCallees: [], callsBack: [] });
+    const g = graphOf([["P", "ADDR"], ["Q", "ADDR"]], [], { ADDR: "address" });
+    const through = (target: string) => ({ source: "P", target, instruction: "lcall [0x1200]", instruction_offset: "P", returns: true, conditions: [], through: "ds:[1200]" });
+    const p = buildWorkPlan(new CallGraph({ aliases: {}, nodes: Object.fromEntries(g.nodes), edges: [...g.edges, through("ADDR"), through("GHOST")] }), new Set(), () => 10, OPTS);
+    expect(unit(p, "P")).toMatchObject({ dependsOn: [], externalCallees: [], callsBack: [] });
+  });
+});
+
 describe("ranking", () => {
   const u = (id: string, over: Partial<WorkUnit> = {}): WorkUnit => ({
-    id, root: id, members: [id], lines: 100, oversized: false, dependsOn: [], externalCallees: [], implemented: [], complete: false, readiness: 1, unblocks: 0, indirectCalls: [], ...over,
+    id, root: id, members: [id], lines: 100, oversized: false, dependsOn: [], externalCallees: [], implemented: [], complete: false, readiness: 1, unblocks: 0, indirectCalls: [], callsBack: [], ...over,
   });
   const order = (...units: WorkUnit[]) => [...units].sort((a, b) => compareWorkUnits(a, b, 100)).map((x) => x.id);
 

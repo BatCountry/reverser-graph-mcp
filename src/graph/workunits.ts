@@ -8,17 +8,23 @@ import type { CallGraph } from "./model.js";
 //
 // 1. Strongly connected components (mutual recursion) collapse into one condensed node.
 // 2. A condensed node with exactly one distinct caller is owned by that caller; the rest are roots. Calls through
-//    stored pointers (edges with `through` into a function: table entries, callbacks) take no part in this or in
-//    dependencies: the procedures stored there are entries of their own, and an interpreter whose handlers call back
-//    into its dispatcher would otherwise fuse into one recursive group of a hundred functions. Each root plus
-//    everything it transitively owns is a candidate work unit. A root with no function in it (a call through a
-//    run-time address or an address-only node, reached from 0 or 2+ places) has nothing to write and is no work
-//    unit; such nodes owned by a single caller stay listed in the caller's unit. Links to other programs (edges with
-//    `link`: an interrupt a resident driver answers, a program launch, a file read) take no part either: the game does
-//    not need its sound driver written first, and each program (and batch file) roots units of its own.
+//    stored pointers (edges with `through` into a function: table entries, callbacks) take no part in this: the
+//    procedures stored there are entries of their own, and an interpreter whose handlers call back into its
+//    dispatcher would otherwise fuse into one recursive group of a hundred functions (they do order units, step 6).
+//    Each root plus everything it transitively owns is a candidate work unit. A root with no function in it (a call
+//    through a run-time address or an address-only node, reached from 0 or 2+ places) has nothing to write and is no
+//    work unit; such nodes owned by a single caller stay listed in the caller's unit. Links to other programs (edges
+//    with `link`: an interrupt a resident driver answers, a program launch, a file read) take no part in this or in
+//    dependencies: the game does not need its sound driver written first, and each program (and batch file) roots
+//    units of its own.
 // 3. A candidate over budget is split: every non-trivial owned child (size >= trivialLines, or it calls something)
 //    becomes its own candidate root, recursively; trivial leaf children stay with the parent.
 // 4. Whatever is still over budget is flagged oversized (usually one monolithic function).
+// 5. Members, size and completion of each unit.
+// 6. A unit depends on every unit its members call. A call through a stored pointer counts like a direct call unless
+//    the target's unit already waits on the caller's: there the program recurses through the pointer (a script
+//    command that runs the interpreter again), one side has to exist first, and it is the caller, which is listed
+//    in `callsBack`. Dependencies therefore never form a cycle, so while work remains some unit is ready.
 // Implemented nodes never change the partition; they only mark members done.
 
 export interface WorkUnitOptions {
@@ -52,6 +58,8 @@ export interface WorkUnit {
   unblocks: number;
   /** members' transfers the graph cannot resolve to a function, with the generator's reason */
   indirectCalls: IndirectCall[];
+  /** functions members call through stored pointers that are no dependency: their work units wait on this one */
+  callsBack: string[];
 }
 
 export interface IndirectCall {
@@ -291,14 +299,17 @@ export function buildWorkPlan(
     );
     units.set(id, {
       id, root, members, lines, oversized: lines > budgetLines, dependsOn: [], externalCallees: [],
-      implemented: done, complete: done.length === functions.length, readiness: 1, unblocks: 0, indirectCalls,
+      implemented: done, complete: done.length === functions.length, readiness: 1, unblocks: 0, indirectCalls, callsBack: [],
     });
   }
 
   // ---- 6. dependencies, readiness, unblocks
+  const calls = new Map<string, { callees: Set<string>; deps: Set<string>; back: Set<string> }>();
+  const pointerCalls: Array<{ from: string; target: string; to: string }> = [];
   for (const unit of units.values()) {
     const callees = new Set<string>();
     const deps = new Set<string>();
+    calls.set(unit.id, { callees, deps, back: new Set() });
     for (const m of unit.members) {
       for (const w of adj[at.get(m)!]!) {
         const other = unitOfIndex[w];
@@ -306,9 +317,43 @@ export function buildWorkPlan(
         callees.add(ids[w]!);
         deps.add(other);
       }
+      for (const e of graph.out.get(m) ?? []) {
+        if (e.link !== undefined || e.through === undefined || graph.nodes.get(e.target)?.kind !== "function") continue;
+        const to = unitOfIndex[at.get(e.target)!]!; // every function is in a unit
+        if (to !== unit.id) pointerCalls.push({ from: unit.id, target: e.target, to });
+      }
     }
-    unit.externalCallees = [...callees].sort(ascending);
-    unit.dependsOn = [...deps].sort(ascending);
+  }
+  const waitsOn = (unit: string, other: string): boolean => {
+    const seen = new Set([unit]);
+    const stack = [unit];
+    while (stack.length) {
+      const u = stack.pop()!;
+      if (u === other) return true;
+      for (const d of calls.get(u)!.deps) {
+        if (seen.has(d)) continue;
+        seen.add(d);
+        stack.push(d);
+      }
+    }
+    return false;
+  };
+  // in id order, so a cycle made only of pointer calls breaks at the same call whatever order the graph lists edges in
+  pointerCalls.sort((a, b) => ascending(a.from, b.from) || ascending(a.target, b.target));
+  for (const { from, target, to } of pointerCalls) {
+    const c = calls.get(from)!;
+    if (waitsOn(to, from)) {
+      c.back.add(target);
+    } else {
+      c.callees.add(target);
+      c.deps.add(to);
+    }
+  }
+  for (const unit of units.values()) {
+    const c = calls.get(unit.id)!;
+    unit.externalCallees = [...c.callees].sort(ascending);
+    unit.dependsOn = [...c.deps].sort(ascending);
+    unit.callsBack = [...c.back].sort(ascending);
   }
   for (const unit of units.values()) {
     if (unit.dependsOn.length) unit.readiness = unit.dependsOn.filter((d) => units.get(d)!.complete).length / unit.dependsOn.length;

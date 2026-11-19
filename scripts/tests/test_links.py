@@ -185,6 +185,14 @@ def test_a_handler_outside_the_programs_code_is_not_installed():
     assert an.facts.vectors == [("A_COM:0080", 0x66, "A_COM:010a")] and links.installs(an) == {}
 
 
+def test_a_handler_installed_for_a_vector_that_is_not_a_constant():
+    # mov al, [0200h]; mov dx, 0120h; mov ah, 25h; int 21h: a handler, for a vector only the run knows
+    an = analysed(driver(b"\xa0\x00\x02\xba\x20\x01\xb4\x25\xcd\x21\xc3"), "A.COM").an
+    assert an.facts.vectors == [("A_COM:0120", None, "A_COM:010c")] and links.installs(an) == {}
+    assert "interrupt-vector" in an.root_kinds["A_COM:0120"]
+    assert an.proof["A_COM:0120"] == ["installed as an interrupt handler (the vector number is not a constant there) at A_COM:010c (INT 21h/25h)"]
+
+
 @pytest.mark.parametrize("vector,found", [(0, True), (0x66, True), (0xFF, True), (0x100, False), (0xFFFF, False)])
 def test_hook_record_vector_range(vector, found):
     an = analysed(driver(hook_record(0x200, vector, 0x120) + b"\xc3"), "A.COM").an

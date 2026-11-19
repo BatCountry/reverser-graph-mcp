@@ -1,4 +1,4 @@
-"""MZ executable and Turbo Pascal INT 3Fh overlay parsing.
+"""MZ executable and overlay parsing: Turbo Pascal INT 3Fh overlay files, RTLink/Plus sections and Microsoft LINK overlays.
 
 Everything is derived from the bytes: the MZ header (load image, relocations, entry point; an EXEPACK-packed image
 is unpacked first, see exepack.py) and the overlay stub segments inside the load image.  A stub segment is a
@@ -16,11 +16,14 @@ paragraph-aligned block
 
 and the .OVR file is a header followed by every module's code+fixups in chain order: Turbo Pascal 5.x writes the
 signature `TPOV`, Turbo Pascal 6.0 writes `FBOV` and a dword holding the size of everything after those 8 bytes.
-Anything that does not match this layout raises FormatError instead of being guessed at.
+Anything that does not match this layout raises FormatError instead of being guessed at. The two layouts that append
+their overlays to the EXE are described where they are parsed, below.
 """
 
 from __future__ import annotations
 
+import bisect
+import re
 import struct
 from dataclasses import dataclass, field, replace
 
@@ -67,10 +70,14 @@ COM_MAX = 0x10000 - COM_ORIGIN - 2  # the file, the PSP and a 2-byte stack must 
 RTLINK_SIGNATURE = b".RTLink"
 
 
-def parse_mz(data: bytes) -> MZImage:
+MZ_SIGNATURES = (b"MZ", b"ZM")
+
+
+def _mz_header(data: bytes) -> tuple[int, int, list[tuple[int, int]], int, int]:
+    """(header size, end of the load image, relocation entries `off, seg`, CS, IP) of the MZ file `data` starts with."""
     if len(data) < 0x1C:
         raise FormatError(f"truncated MZ header: {len(data)} bytes, need at least 28")
-    if data[:2] not in (b"MZ", b"ZM"):
+    if data[:2] not in MZ_SIGNATURES:
         raise FormatError(f"bad MZ signature {data[:2]!r}")
     (cblp, cp, crlc, cparhdr, _minalloc, _maxalloc, _ss, _sp, _csum, ip, cs, lfarlc) = struct.unpack_from(
         "<12H", data, 2
@@ -85,16 +92,20 @@ def parse_mz(data: bytes) -> MZImage:
         raise FormatError(f"truncated MZ file: header declares {end} bytes, file has {len(data)}")
     if lfarlc + 4 * crlc > hdr:
         raise FormatError(f"MZ relocation table ({crlc} entries at {lfarlc:#x}) runs past the header ({hdr:#x})")
+    return hdr, end, [struct.unpack_from("<HH", data, lfarlc + 4 * i) for i in range(crlc)], cs, ip
+
+
+def parse_mz(data: bytes) -> MZImage:
+    hdr, end, entries, cs, ip = _mz_header(data)
     image = data[hdr:end]
     relocs = set()
-    for i in range(crlc):
-        off, seg = struct.unpack_from("<HH", data, lfarlc + 4 * i)
+    for i, (off, seg) in enumerate(entries):
         pos = seg * 16 + off
         if pos + 2 > len(image):
             raise FormatError(f"MZ relocation {i} ({seg:#06x}:{off:#06x}) points past the load image")
         relocs.add(pos)
     if exepack.is_exepack(image, cs, ip):
-        u = exepack.unpack(image, cs, ip, crlc)
+        u = exepack.unpack(image, cs, ip, len(entries))
         return MZImage(None, u.image, u.relocations, u.entry, "MZ unpacked from EXEPACK", len(data) - end)
     entry = cs * 16 + ip
     if entry >= len(image):
@@ -153,22 +164,24 @@ NO_PARENT = 0xFFFF
 
 
 @dataclass
-class RTSection:
+class OverlaySection:
+    """Code an overlay manager loads from behind the EXE's load image: an RTLink/Plus section or a Microsoft LINK overlay."""
+
     index: int
-    name: str  # TOOL_EXE-0003: the program's file and the section index its stubs carry
+    name: str  # TOOL_EXE-0003: the program's file and the number the section's callers carry
     load: int  # unrelocated paragraph the section is loaded at
     paragraphs: int  # memory it occupies
     parent: int | None
     code: bytes  # the section's bytes as in the file (offset 0 = load:0000)
     file_offset: int
     fixups: set[int]  # section offsets of relocated segment words
-    data: bool  # flags 0100h: the data segment, not code
+    data: bool  # RTLink flags 0100h: the data segment, not code
 
     def holds(self, lin: int) -> bool:
         return self.load * 16 <= lin < (self.load + self.paragraphs) * 16
 
 
-def _rtlink_sections(data: bytes, mz: MZImage, table: int, n: int, root: str) -> list[RTSection] | None:
+def _rtlink_sections(data: bytes, mz: MZImage, table: int, n: int, root: str) -> list[OverlaySection] | None:
     """The sections the table at image offset `table` describes, or None if they do not tile the appended data."""
     end = mz.file_base + len(mz.image)
     pos = (end + 15) // 16 * 16
@@ -190,13 +203,13 @@ def _rtlink_sections(data: bytes, mz: MZImage, table: int, n: int, root: str) ->
                 return None
             fixups.add(at)
         code = data[code_at : min(stop, len(data))]
-        out.append(RTSection(k, f"{root}-{k:04x}", load, paras, None if parent == NO_PARENT else parent, code, code_at, fixups,
-                             flags == RTLINK_DATA))
+        out.append(OverlaySection(k, f"{root}-{k:04x}", load, paras, None if parent == NO_PARENT else parent, code, code_at, fixups,
+                                  flags == RTLINK_DATA))
         pos = stop
     return out if pos - 15 <= len(data) <= pos else None
 
 
-def parse_rtlink(data: bytes, mz: MZImage, root: str) -> tuple[list[RTSection], dict[int, tuple[str, int]], tuple[int, int]]:
+def parse_rtlink(data: bytes, mz: MZImage, root: str) -> tuple[list[OverlaySection], dict[int, tuple[str, int]], tuple[int, int]]:
     """Sections, stubs (image offset -> (section space, offset in it)) and the stub table's image range."""
     if mz.file_base is None or not mz.appended:
         raise FormatError(f"{root}: RTLink/Plus program without overlay sections appended to its load image")
@@ -234,6 +247,101 @@ def parse_rtlink(data: bytes, mz: MZImage, root: str) -> tuple[list[RTSection], 
                           f"(lengths {[len(r) for r in runs[:4]]})")
     stubs = {p: (name, at) for p, _m, name, at in runs[0]}
     return sections, stubs, (runs[0][0][0], runs[0][-1][0] + RTLINK_STUB)
+
+
+# ------------------------------------------------------------------ Microsoft LINK overlays
+#
+# Checked on one Microsoft C program. `LINK root + (a) + (b)` writes each overlay as an MZ image of its own behind
+# the root's, each starting on a 512-byte page and the last ending the file. Header word 1Ah is the overlay number
+# (1, 2, ... in file order; 0 in the root); the relocation entries are `off, seg` with seg counted from the
+# program's load segment, as the root's are. Overlays may share their load area, which the root image leaves empty.
+# A far call into an overlay is written
+#     int 3Fh; db segment number; dw offset
+# where a `call far` would be. The overlay manager (the INT 3Fh handler) looks the segment number up in two tables
+# the linker puts in the root's data, behind their sizes:
+#     dw segments; dw overlays, the root included; segments x dw base segment (relocated); segments x db overlay
+# loads that overlay if another one is in memory, and enters base:offset. Segments of overlay 0 are the root's.
+
+LINK_PAGE = 512
+LINK_OVERLAY_NUMBER = 0x1A  # header word
+OVERLAY_TRAP = b"\xcd\x3f"  # int 3Fh: the overlay manager interrupt of Turbo Pascal and of Microsoft LINK
+LINK_CALL = re.compile(rb"(?=\xcd\x3f(.)(..))", re.S)
+
+
+def _page(pos: int) -> int:
+    return -(-pos // LINK_PAGE) * LINK_PAGE
+
+
+def has_appended_image(data: bytes, mz: MZImage) -> bool:
+    """Whether another MZ image starts on the page after the load image: an overlay as Microsoft LINK appends them."""
+    start = _page(len(data) - mz.appended)
+    return data[start : start + 2] in MZ_SIGNATURES
+
+
+def _link_sections(images: list[tuple[int, bytes, list[tuple[int, int]]]], segments: list[tuple[int, int]],
+                   root: str) -> list[OverlaySection] | None:
+    """The overlays where the segment table `segments` loads them, or None if a segment or a relocated word then
+    lies outside its overlay's bytes."""
+    out = []
+    for k, (at, code, entries) in enumerate(images, 1):
+        bases = [base for owner, base in segments if owner == k]
+        load = min(bases)
+        fixups = {(seg - load) * 16 + off for off, seg in entries}
+        if any((b - load) * 16 >= len(code) for b in bases) or any(not 0 <= p <= len(code) - 2 for p in fixups):
+            return None
+        out.append(OverlaySection(k, f"{root}-{k:04x}", load, (len(code) + 15) // 16, None, code, at, fixups, False))
+    return out
+
+
+def parse_link_overlays(data: bytes, mz: MZImage, root: str) -> tuple[list[OverlaySection], list[tuple[int, int]]]:
+    """The overlays appended to the program `data`, and its segment table: segment number -> (overlay number, base
+    segment). The table is the one place in the root image that fits the layout above and the appended overlays."""
+    images: list[tuple[int, bytes, list[tuple[int, int]]]] = []
+    pos = stop = _page(len(data) - mz.appended)
+    while pos < len(data):
+        where = f"{root}: image appended at {pos:#x}"
+        try:
+            hdr, end, entries, _cs, _ip = _mz_header(data[pos:])
+        except FormatError as e:
+            raise FormatError(f"{where}: {e}") from None
+        number = struct.unpack_from("<H", data, pos + LINK_OVERLAY_NUMBER)[0]
+        if number != len(images) + 1:
+            raise FormatError(f"{where} carries overlay number {number}, expected {len(images) + 1} "
+                              "(Microsoft LINK numbers its overlays 1, 2, ... in file order; not parsed otherwise)")
+        images.append((pos + hdr, data[pos + hdr : pos + end], entries))
+        stop = pos + end
+        pos = _page(stop)
+    if stop != len(data):
+        raise FormatError(f"{root}: {len(data) - stop} bytes follow its last appended overlay")
+    count = len(images) + 1
+    img = mz.image
+    found = []
+    for t in range(len(img) - 3):
+        n, overlays = struct.unpack_from("<HH", img, t)
+        words = t + 4
+        if overlays != count or words + 3 * n > len(img):
+            continue
+        owners = img[words + 2 * n : words + 3 * n]
+        if set(owners) != set(range(count)) or any(words + 2 * g not in mz.relocations for g in range(n)):
+            continue
+        segments = list(zip(owners, struct.unpack_from(f"<{n}H", img, words)))
+        if (sections := _link_sections(images, segments, root)) is not None:
+            found.append((sections, segments))
+    if len(found) != 1:
+        raise FormatError(f"{root}: {len(found)} Microsoft LINK segment tables fit its {len(images)} appended overlays, need exactly one")
+    sections, segments = found[0]
+    called = set()
+    for buf in [img] + [s.code for s in sections]:
+        for m in LINK_CALL.finditer(buf):
+            number, off = m.group(1)[0], int.from_bytes(m.group(2), "little")
+            owner, base = segments[number] if number < len(segments) else (0, 0)
+            if owner and (base - sections[owner - 1].load) * 16 + off < len(sections[owner - 1].code):
+                called.add(owner)
+    missing = sorted(set(range(1, count)) - called)
+    if missing:
+        raise FormatError(f"{root}: no `int 3Fh` call names a segment of overlay {', '.join(map(str, missing))} "
+                          "(another overlay interrupt, or a layout this tool does not parse)")
+    return sections, segments
 
 
 @dataclass
@@ -365,7 +473,7 @@ class Stub:
 
 class Program:
     """Address spaces of one executable file (MZ, .COM or loaded module) plus its overlays: an INT 3Fh overlay file,
-    or RTLink/Plus sections appended to the EXE."""
+    or RTLink/Plus sections or Microsoft LINK overlays appended to the EXE."""
 
     def __init__(self, exe: bytes, ovr: bytes | None = None, exe_name: str = "MAIN.EXE", ovr_name: str | None = "MAIN.OVR",
                  layout: str | None = None, in_file: bool = True, loaded_from: str | None = None):
@@ -395,18 +503,19 @@ class Program:
         }
         self.stubs: dict[int, Stub] = {}
         self.sentinel_stubs: dict[int, Stub] = {}
-        self.stub_ranges: list[tuple[int, int, str]] = []
+        self.stub_ranges: list[tuple[int, int, str]] = []  # load-image ranges that hold no code of the root, by what they are
         for b in self.blocks:
             self.spaces[b.name] = Space(b.name, b.code, self.ovr_name, b.ovr_offset, set(b.fixups))
             for sp, payload in b.entries:
                 self.stubs[sp] = Stub(sp, b.name, payload)
             for sp, payload in b.sentinels:
                 self.sentinel_stubs[sp] = Stub(sp, b.name, payload)
-            self.stub_ranges.append((b.stub_segment * 16, b.stub_table_end, b.name))
-        self.sections: dict[str, RTSection] = {}
-        self.section_list: list[RTSection] = []
+            self.stub_ranges.append((b.stub_segment * 16, b.stub_table_end, f"{b.name} stub segment"))
+        self.sections: dict[str, OverlaySection] = {}  # code sections appended to the EXE, by space
+        self.section_list: list[OverlaySection] = []  # RTLink/Plus: every section, by index
         self._section_bases: dict[str, list[int]] = {}
         self.rt_stubs: dict[int, tuple[str, int]] = {}
+        self.link_segments: list[tuple[int, int]] = []  # Microsoft LINK: segment number -> (overlay number, base segment)
         if self.mz.layout == "MZ" and RTLINK_SIGNATURE in self.image:
             self.section_list, rt_stubs, (start, end) = parse_rtlink(exe, self.mz, self.root)
             for s in self.section_list:
@@ -419,6 +528,14 @@ class Program:
             for sp, (name, at) in rt_stubs.items():
                 self.stubs[sp] = Stub(sp, name, at)
             self.stub_ranges.append((start, end, f"{self.root} RTLink stub table"))
+        elif has_appended_image(exe, self.mz):
+            sections, self.link_segments = parse_link_overlays(exe, self.mz, self.root)
+            for s in sections:
+                self.sections[s.name] = s
+                self.spaces[s.name] = Space(s.name, s.code, self.exe_name, s.file_offset, s.fixups)
+                self._section_bases[s.name] = sorted({(base - s.load) * 16 for owner, base in self.link_segments if owner == s.index})
+            self.stub_ranges.append((min(s.load for s in sections) * 16, max(s.load + s.paragraphs for s in sections) * 16,
+                                     f"{self.root} overlay area"))
         self.stub_ranges.sort()
         self._segment_bases: list[int] | None = None
         self._ds_loads: set[int] | None = None
@@ -452,17 +569,17 @@ class Program:
             return None, f"stub {nid(self.root, lin)} of {st.block} is a sentinel (payload {st.payload:#x})"
         blk = self.stub_table_of(lin)
         if blk:
-            return None, f"inside {blk} stub segment but not on an entry stub ({lin:#x})"
+            return None, f"inside the {blk}, not at a stub entry ({lin:#x})"
         if 0 <= lin < len(self.image):
             return nid(self.root, lin), "root"
         return None, f"far target {lin:#x} outside load image"
 
     def resolve_far(self, seg: int, off: int, space: str | None = None) -> tuple[str | None, str]:
-        """A direct far target. From code in an RTLink section: that section, then its ancestors (loaded with it).
-        Otherwise the one section whose load area holds the address (several sections sharing that area: None, it
-        depends on which is loaded), else the resident image."""
+        """A direct far target. From code in an overlay section: that section, then its ancestors (loaded with it).
+        Otherwise, for an address that is not the resident image's code, the one section whose bytes reach it
+        (several: None, it depends on which is loaded), else the resident image."""
         lin = seg * 16 + off
-        if self.section_list:
+        if self.sections:
             chain = []
             sec = self.sections.get(space) if space else None
             while sec is not None:
@@ -471,7 +588,7 @@ class Program:
             for s in chain:
                 if s.holds(lin):
                     return self._in_section(s, lin)
-            if lin >= len(self.image):
+            if lin >= len(self.image) or self.stub_table_of(lin):
                 holders = [s for s in self.sections.values() if s.holds(lin)]
                 if len(holders) == 1:
                     return self._in_section(holders[0], lin)
@@ -479,11 +596,21 @@ class Program:
                     return None, f"far target {lin:#x} is in the load area of {len(holders)} overlay sections"
         return self.resolve_root_linear(lin)
 
-    def _in_section(self, s: RTSection, lin: int) -> tuple[str | None, str]:
+    def _in_section(self, s: OverlaySection, lin: int) -> tuple[str | None, str]:
         at = lin - s.load * 16
         if at >= len(s.code):
             return None, f"far target {lin:#x} is past the code of {s.name}"
         return nid(s.name, at), f"in {s.name}"
+
+    def overlay_call(self, number: int, off: int) -> tuple[str | None, str]:
+        """Target of `int 3Fh; db number; dw off` (Microsoft LINK): `off` in the segment the program's table gives
+        that number, in the overlay holding the segment or in the root."""
+        if number >= len(self.link_segments):
+            return None, f"overlay call names segment {number}, the program's table has {len(self.link_segments)}"
+        owner, base = self.link_segments[number]
+        if owner == 0:
+            return self.resolve_root_linear(base * 16 + off)
+        return self._in_section(self.sections[f"{self.root}-{owner:04x}"], base * 16 + off)
 
     def segment_bases(self) -> list[int]:
         """Linear bases of every load-image segment named by a relocated segment word."""
@@ -499,12 +626,10 @@ class Program:
 
     def code_base(self, space: str, addr: int) -> int:
         """Offset (in its space) of the segment code at `addr` runs in: the nearest relocated segment base at or
-        below it (an approximation: segments are only known from relocations); in an RTLink section the same over
+        below it (an approximation: segments are only known from relocations); in an overlay section the same over
         the section's own segments; 0 inside a Turbo Pascal overlay."""
-        if space == self.root:
-            return max(b for b in self.segment_bases() if b <= addr)
-        bases = self._section_bases.get(space)
-        return 0 if bases is None else max(b for b in bases if b <= addr)
+        bases = self.segment_bases() if space == self.root else self._section_bases.get(space, [0])
+        return bases[bisect.bisect_right(bases, addr) - 1]
 
     def ds_loads(self) -> set[int]:
         """Linear bases of the segments resident code loads into DS: `mov r16, SEG; mov ds, r16` with

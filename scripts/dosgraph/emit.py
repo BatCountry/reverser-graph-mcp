@@ -322,7 +322,8 @@ game directory in one tree.
    entry 100h; anything else (`.DRV`) as a module read into memory at offset 0, whose entries are offset 0
    and every slot of a leading run of `jmp near` instructions. Each `.OVR` belongs to the one program whose
    overlay stub chain it tiles. Bytes after an MZ load image are data the program may read (listed above),
-   not code, unless they are RTLink/Plus overlay sections (step 1). A layout this tool cannot parse aborts the build.
+   not code, unless they are RTLink/Plus overlay sections or Microsoft LINK overlays (step 1). A layout this tool
+   cannot parse aborts the build.
 1. **Address spaces.** Every space is named after the file its bytes come from (`MAIN.EXE` →
    `MAIN_EXE`; `MAIN_EXE:XXXX` = offset in the loaded image). The MZ header gives the load image, its
    relocation table and the entry point. Every paragraph of the image that starts with an INT 3Fh
@@ -340,13 +341,23 @@ game directory in one tree.
    `TOOL_EXE-NNNN` (NNNN = the section index its stubs carry; offsets from its load segment, so a section with
    several segments counts across them), reached through the 10-byte stubs `call <manager>; jmp far seg:off;
    dw section` in the resident image; the data section (DGROUP) is not code. A far call from section code
-   means its own section, then its ancestors (loaded with it), then the resident image. Code a program reads from
+   means its own section, then its ancestors (loaded with it), then the resident image. A program linked with
+   Microsoft LINK overlays appends each overlay as an MZ image of its own (header word 1Ah = overlay number 1, 2, ...,
+   each on a 512-byte page, the last ending the file); each is a space `MAIN_EXE-NNNN` (NNNN = the overlay number;
+   offsets from the start of its code). A far call into one is written `int 3Fh; db segment number; dw offset`: the
+   listing shows those five bytes as one line, `int 0x3f  ; overlay call: segment N, offset 0x...`, and the root's
+   segment table (`dw segments; dw overlays; segments x dw base segment; segments x db overlay number`, the one
+   place in the image that fits the appended overlays) says which overlay holds segment N and where. The overlays
+   load into one area of the root image, which holds no root code. Code a program reads from
    a data file and calls (step 7) is a program too. Each program is analysed on its own (steps 2-5); step 6 links
    the programs.
 2. **Functions.** Recursive descent (capstone, 16-bit) from each program's entry and module entries, every overlay entry
    (stub payload; `FFFF` sentinel stubs ignored), every direct call target (far calls through stubs
-   resolved to the module entry), every far/cross-space jump target, every target of a resolved indirect
-   transfer and every installed interrupt handler (step 3), and validated pointer guesses (step 3).
+   resolved to the module entry, Microsoft LINK overlay calls to the function they name), every far/cross-space
+   jump target, every target of a resolved indirect
+   transfer and every installed interrupt handler (step 3), and validated pointer guesses (step 3). An `int 3Fh`
+   reached in a program whose overlays were not parsed aborts the build: it is a call through an overlay manager
+   followed by call data, so what comes after it cannot be read as instructions.
    Conditional and unconditional jumps are followed; descent stops at `ret`/`retf`/`iret`, DOS exits,
    indirect jumps, jumps to another function's start (tail jumps) and at falling through into another
    function's start. `push cs; push x3; retf` is treated as an indirect call. A jump target that is not a
@@ -365,12 +376,21 @@ game directory in one tree.
    pushed for `retf`. An indirect call or jump through a variable resolves to the constant pointers stored
    in it (following copies between variables); through `[index + T]` to the run of entries stored at
    T, T+4, ... (or T+2 for near tables); through a record field (`es:[di + k]` with ES:DI from `les`) to
-   whatever is stored into field k of any record (provisional: matched by offset only). Those targets, and
-   installed interrupt handlers, are proven functions. A built pointer nothing is seen calling through is
-   a guess: its target becomes a provisional function only if it decodes as a self-contained 8086
+   whatever is stored into field k of any record (provisional: matched by offset only). A far pointer the
+   linker left in the load image counts as stored: a variable or table entry whose segment word is relocated
+   holds that pointer before any code runs (a table entry must point at code: into an overlay, or into a
+   segment that holds decoded instructions and not past its end). A near call through a table in the code's
+   own segment that no code fills (`call word ptr cs:[bx + T]`) reads its entries from the bytes: the words
+   from T (or T+2) up to where code begins, which is the first decoded instruction or the lowest address the
+   table names; if one of them is not an address in the space, outside decoded instructions and outside the
+   table, nothing is taken. Those targets, and interrupt handlers installed with a constant DS:DX (also where
+   the vector number is not a constant), are proven functions. A built pointer nothing is seen calling
+   through is a guess: its target becomes a provisional function only if it decodes as a self-contained 8086
    procedure (clean flow, a terminator, no zero fill, no Pascal string at the start, no contact with
    already-decoded code); a guess never splits an existing listing. A plain `mov`/`push` immediate that is
-   the first byte of an unreached run is the same kind of guess.
+   the first byte of an unreached run is the same kind of guess, and so is a far address in the load image
+   (a relocated segment word behind an offset word) that points at code from a segment holding no decoded
+   instruction; in a segment that holds code it may be an operand of code nothing reaches yet, and is skipped.
 4. **Non-returning functions** are a fixpoint: no reachable return, no unresolved indirect jump, only tail
    transfers to non-returning functions. Calls to them have `returns: false` and nothing after them is
    decoded.
@@ -448,6 +468,8 @@ def files_table(progs: list[Program], hashes: dict[str, str], scripts: tuple[str
         extra = f"; {p.mz.appended} bytes appended after the load image" if p.mz.appended else ""
         if p.section_list:
             extra = f"; RTLink/Plus overlays appended ({len(p.sections)} code sections, {len(p.section_list) - len(p.sections)} data)"
+        if p.link_segments:
+            extra = f"; Microsoft LINK overlays appended ({len(p.sections)})"
         if p.loaded_from:
             extra = f"; {p.loaded_from}"
         rows.append(f"| {p.exe_name} | {p.mz.layout}{extra} | `{hashes[p.exe_name]}` |")

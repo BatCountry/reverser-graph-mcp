@@ -93,7 +93,7 @@ def test_program_ok():
     assert "stub segment" in p.resolve_root_linear(seg * 16 + 2)[1]
     assert p.resolve_root_linear(3) == ("MAIN_EXE:0003", "root")
     assert p.resolve_root_linear(len(p.image) + 5)[0] is None
-    assert p.stub_table_of(seg * 16 + 0x21) == mid and p.stub_table_of(0) is None
+    assert p.stub_table_of(seg * 16 + 0x21) == f"{mid} stub segment" and p.stub_table_of(0) is None
     assert p.stub_table_of(len(p.image) + 100) is None
     assert split_id("MAIN_OVR-0016:0022") == ("MAIN_OVR-0016", 0x22)
 

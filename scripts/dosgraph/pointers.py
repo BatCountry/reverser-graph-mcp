@@ -14,16 +14,20 @@ A far pointer is recorded (`PointerLoad`) wherever the code puts one: stored as 
 word above it), stored into a record through a pointer, pushed as an argument (segment, then offset), handed to
 DOS as DS:DX for INT 21h/25h, or pushed for a `retf`. Every word store is recorded with what was stored, and
 every indirect call or jump through memory or a register, and every `retf` dispatch, is recorded as a `Use`.
-`resolve()` connects each use to the constant pointers stored where it reads: proof that the target is code.
+`resolve()` connects each use to the constant pointers stored where it reads: proof that the target is code. The
+load image counts as a store where the linker left a far pointer (a relocated segment word behind an offset word),
+and a near call through a table in its own segment that no code fills reads the table from the bytes (`code_table`).
 """
 
 from __future__ import annotations
 
 import collections
+import math
 import re
+import struct
 from dataclasses import dataclass, field
 
-from .binary import Program, nid
+from .binary import Program, nid, split_id
 from .x86 import Decoder, Insn, target_of
 
 R16 = ("ax", "cx", "dx", "bx", "sp", "bp", "si", "di")
@@ -163,8 +167,11 @@ class Facts:
     loads: list[PointerLoad] = field(default_factory=list)
     stores: list[Store] = field(default_factory=list)
     uses: list[Use] = field(default_factory=list)
-    vectors: list[tuple[str, int, str]] = field(default_factory=list)  # (target, interrupt, site)
+    vectors: list[tuple[str, int | None, str]] = field(default_factory=list)  # (target, interrupt if constant, site)
     ints: list[tuple[str, int, int | None]] = field(default_factory=list)  # (site, interrupt, AH or None), per state
+    code_segments: set[int] = field(default_factory=set)  # paragraphs of the root segments holding decoded instructions
+    starts: dict[str, set[int]] = field(default_factory=dict)  # space -> first bytes of the decoded instructions
+    inside: dict[str, set[int]] = field(default_factory=dict)  # space -> their other bytes
 
 
 @dataclass(frozen=True)
@@ -229,6 +236,14 @@ def far_target(prog: Program, seg: tuple, off: int, dgroup: int | None) -> str |
     return prog.resolve_far(para, off & 0xFFFF)[0]
 
 
+def code_segment(prog: Program, ins: Insn, dgroup: int | None) -> tuple:
+    """The segment `ins` runs in, as a segment key."""
+    if ins.space == prog.root:
+        n = prog.code_base(ins.space, ins.addr) // 16
+        return DGROUP if n == dgroup else ("para", n)
+    return ("space", ins.space, prog.code_base(ins.space, ins.addr))
+
+
 def near_target(prog: Program, ins: Insn, off: int) -> str:
     return nid(ins.space, prog.code_base(ins.space, ins.addr) + (off & 0xFFFF))
 
@@ -286,14 +301,14 @@ class _Walk:
         return Seg(DGROUP if n == self.dgroup else ("para", n), site)
 
     def code_seg(self, ins: Insn) -> tuple:
-        if ins.space == self.prog.root:
-            n = self.prog.code_base(ins.space, ins.addr) // 16
-            return DGROUP if n == self.dgroup else ("para", n)
-        return ("space", ins.space, self.prog.code_base(ins.space, ins.addr))
+        return code_segment(self.prog, ins, self.dgroup)
 
     def imm(self, ins: Insn, n: int, site: str):
         sp = self.prog.spaces[ins.space]
         if len(ins.raw) >= 3 and ins.end - 2 in sp.relocated_words and int.from_bytes(ins.raw[-2:], "little") == n:
+            own = self.prog.sections.get(ins.space)
+            if own is not None and own.holds(n * 16):  # overlays share their load area: the code means its own
+                return Seg(("space", ins.space, (n - own.load) * 16), site)
             return self.seg_of_para(n, site)
         return Const(n, site)
 
@@ -544,7 +559,7 @@ class _Walk:
         ah = ax.n >> 8 if isinstance(ax, Const) else st.get("ah")
         al = ax.n & 0xFF if isinstance(ax, Const) else st.get("al")
         self.facts.ints.append((site, n, ah if isinstance(ah, int) else None))
-        if n == 0x21 and ah == 0x25 and al is not None:
+        if n == 0x21 and ah == 0x25:  # set vector AL to DS:DX: a handler, even where AL is not a constant
             for s, o in pairs(st.get("ds"), st.get("dx")):
                 tgt = far_target(self.prog, s.key, o.n, self.dgroup)
                 self.facts.loads.append(PointerLoad(("vector", al), s.key, o.n, site, o.site, tgt))
@@ -563,7 +578,7 @@ class _Walk:
             for s, o in pairs(hi, lo):
                 self.pointer(("arg", callee or ins.text), s, o, site)
         total = self.pops(callee)
-        own = 2 if ins.far is not None else 1  # return address the call itself pushed
+        own = 1 if ins.far is None and ins.overlay is None else 2  # return address the call itself pushed
         self.after_call(st, total - own if total is not None and total >= own else None)
 
     def after_call(self, st: dict, words: int | None = None) -> None:
@@ -616,6 +631,13 @@ def dgroup(prog: Program, descents: dict) -> int | None:
 def collect(prog: Program, dec: Decoder, descents: dict, kinds: dict, preds_of, dg: int | None) -> Facts:
     """Walk every function; `preds_of(descent)` gives its single-step predecessors (flow.straight_preds)."""
     facts = Facts()
+    for fid, d in descents.items():
+        space = split_id(fid)[0]
+        facts.starts.setdefault(space, set()).update(d.insns)
+        inside = facts.inside.setdefault(space, set())
+        for a, ins in d.insns.items():
+            inside.update(range(a + 1, ins.end))
+    facts.code_segments = {prog.code_base(prog.root, a) // 16 for a in facts.starts.get(prog.root, ())}
     w = _Walk(prog, dec, facts, dg, descents)
     for fid in sorted(descents):
         d = descents[fid]
@@ -663,9 +685,9 @@ def resolve(prog: Program, facts: Facts, dg: int | None) -> list[Resolved]:
                   if (t := far_target(prog, s.key, o.n, dg))]
             out.append(Resolved(u, _dedupe(ts), None if ts else "the far pointer pushed for retf is computed at run time"))
         elif w[0] == "abs":
-            out.append(_resolve_var(prog, u, w, by_loc, ptrs))
+            out.append(_resolve_var(prog, u, w, by_loc, ptrs, dg))
         elif w[0] == "indexed":
-            out.append(_resolve_table(prog, u, w, by_loc, ptrs, indexed))
+            out.append(_resolve_table(prog, u, w, by_loc, ptrs, indexed, dg, facts))
         else:
             hits = [p for p in ptrs.get(w[:2], []) if p.target]
             ts = [Target(p.target, f"stored into that field at {p.site}", True) for p in hits]
@@ -694,15 +716,44 @@ def _dedupe(ts: list[Target]) -> list[Target]:
     return list(seen.values())
 
 
-def _var_values(prog, u: Use, w: tuple, by_loc, ptrs, seen: set, via: str):
+def code_pointer(prog: Program, code_segments: set[int], seg: int, off: int, space: str) -> str | None:
+    """The node a far address found in `space` names, if it is an address of code: in an overlay, or in a root segment
+    that holds decoded instructions, and inside that segment (not past the next segment's start). A far pointer to
+    data, or two unrelated words, look the same in the bytes."""
+    tgt = prog.resolve_far(seg, off, space)[0]
+    if tgt is None or split_id(tgt)[0] != prog.root:
+        return tgt
+    return tgt if seg in code_segments and prog.code_base(prog.root, seg * 16 + off) == seg * 16 else None
+
+
+def initial_pointer(prog: Program, w: tuple, dg: int | None) -> tuple[int, int, str, str] | None:
+    """The far pointer the load image holds at the location `w`, when the linker relocated its segment word: what the
+    variable holds before any code stores into it. Returns (segment, offset, the space it is in, where it is). None
+    as well when the location is in the data segment and it is not known where that is."""
+    key, addr = w[1], w[2]
+    para = dg if key == DGROUP else key[1]
+    if para is None:
+        return None
+    space, pos = (key[1], key[2] + addr) if key[0] == "space" else (prog.root, para * 16 + addr)
+    sp = prog.spaces[space]
+    if pos + 2 not in sp.relocated_words:
+        return None
+    off, seg = struct.unpack_from("<HH", sp.data, pos)
+    return seg, off, space, nid(space, pos)
+
+
+def _var_values(prog, u: Use, w: tuple, by_loc, ptrs, seen: set, via: str, dg: int | None):
     """Constant pointers that can reach variable `w`: stored into it, or into a variable copied into it
-    (`mov ax, [a]; mov dx, [a+2]; mov [w], ax; mov [w+2], dx`, e.g. `ExitProc := SaveExit`).
-    Returns (targets, a stored INT 21h/35h vector, a store of some other run-time value)."""
+    (`mov ax, [a]; mov dx, [a+2]; mov [w], ax; mov [w+2], dx`, e.g. `ExitProc := SaveExit`), or the far pointer
+    the load image holds there. Returns (targets, a stored INT 21h/35h vector, a store of some other run-time value)."""
     seen.add(w)
     lo = by_loc.get(w, [])
     hi = by_loc.get(w[:2] + ((w[2] + 2) & 0xFFFF,), []) if u.far else []
     if u.far:
         ts = [Target(p.target, f"stored at {p.site}{via}", False) for p in ptrs.get(w, []) if p.target]
+        init = initial_pointer(prog, w, dg)
+        if init is not None and (tgt := prog.resolve_far(init[0], init[1], init[2])[0]) is not None:
+            ts.append(Target(tgt, f"in the load image at {init[3]}{via}", False))
     else:
         ts = [Target(near_target(prog, u.ins, c.n), f"stored at {s.site}{via}", False)
               for s in lo for c in members(s.value, Const)]
@@ -718,15 +769,15 @@ def _var_values(prog, u: Use, w: tuple, by_loc, ptrs, seen: set, via: str):
     runtime = next((s for s in lo + hi if _runtime(s.value) and not isinstance(s.value, Vec) and s.site not in explained), None)
     for loc, s in sorted(sources.items()):
         if loc not in seen:
-            t2, v2, r2 = _var_values(prog, u, loc, by_loc, ptrs, seen, f", copied from {fmt_where(loc)} at {s.site}{via}")
+            t2, v2, r2 = _var_values(prog, u, loc, by_loc, ptrs, seen, f", copied from {fmt_where(loc)} at {s.site}{via}", dg)
             ts += t2
             vec = vec or v2
             runtime = runtime or r2
     return ts, vec, runtime
 
 
-def _resolve_var(prog, u: Use, w: tuple, by_loc, ptrs) -> Resolved:
-    ts, vec, runtime = _var_values(prog, u, w, by_loc, ptrs, set(), "")
+def _resolve_var(prog, u: Use, w: tuple, by_loc, ptrs, dg: int | None) -> Resolved:
+    ts, vec, runtime = _var_values(prog, u, w, by_loc, ptrs, set(), "", dg)
     if vec is not None:
         reason = f"the previous INT {vec.n:02X}h handler, which DOS returned (INT 21h/35h) at {vec.site}"
     elif runtime is not None:
@@ -738,25 +789,39 @@ def _resolve_var(prog, u: Use, w: tuple, by_loc, ptrs) -> Resolved:
     return Resolved(u, _dedupe(ts), reason)
 
 
-def _resolve_table(prog, u: Use, w: tuple, by_loc, ptrs, indexed) -> Resolved:
+def _resolve_table(prog, u: Use, w: tuple, by_loc, ptrs, indexed, dg: int | None, facts: Facts) -> Resolved:
+    """Entries T, T+4, ... (T+2, ... for a near table) as far as each holds a constant pointer: stored there, or, in a
+    far table, held there by the load image and pointing at code (a table of far data pointers may follow it). A near
+    table nothing stores into, in the segment of the code that reads it, is read from the bytes (code_table)."""
     key, base = w[1], w[2]
+    code_segments = facts.code_segments
     step = 4 if u.far else 2
-    first = next((k for k in (0, step) if (ptrs if u.far else by_loc).get(("abs", key, (base + k) & 0xFFFF))), None)
+
+    def entry(k: int) -> list[Target]:
+        loc = ("abs", key, (base + k) & 0xFFFF)
+        n = f"entry {k // step} of {u.through}"
+        if not u.far:
+            return [Target(near_target(prog, u.ins, c.n), f"{n}, stored at {s.site}", False)
+                    for s in by_loc.get(loc, []) for c in members(s.value, Const)]
+        found = [Target(p.target, f"{n}, stored at {p.site}", False) for p in ptrs.get(loc, []) if p.target]
+        init = initial_pointer(prog, loc, dg)
+        if init is not None and (tgt := code_pointer(prog, code_segments, init[0], init[1], init[2])) is not None:
+            found.append(Target(tgt, f"{n}, in the load image at {init[3]}", False))
+        return found
+
+    first = next((k for k in (0, step) if entry(k)), None)
     ts: list[Target] = []
     end = base
     if first is not None:
         for i in range(TABLE_SPAN):
-            loc = ("abs", key, (base + first + i * step) & 0xFFFF)
-            if u.far:
-                found = [p for p in ptrs.get(loc, []) if p.target]
-                ts += [Target(p.target, f"entry {(first // step) + i} of {u.through}, stored at {p.site}", False) for p in found]
-            else:
-                found = [(s, c) for s in by_loc.get(loc, []) for c in members(s.value, Const)]
-                ts += [Target(near_target(prog, u.ins, c.n), f"entry {(first // step) + i} of {u.through}, stored at {s.site}", False) for s, c in found]
+            found = entry(first + i * step)
             if not found:
                 break
-            end = loc[2] + step
+            ts += found
+            end = ((base + first + i * step) & 0xFFFF) + step
     writers = [s for s in indexed.get(key, []) if base <= s.where[2] < max(end, base + step) and (s.where[2] - base) % step == 0]
+    if not (ts or writers) and u.ins.kind == "icall" and not u.far and key == code_segment(prog, u.ins, dg):
+        ts = code_table(prog, facts, u, base)
     if writers:
         reason = f"{u.through} is also written through an index (at {writers[0].site})"
     elif not ts:
@@ -764,6 +829,40 @@ def _resolve_table(prog, u: Use, w: tuple, by_loc, ptrs, indexed) -> Resolved:
     else:
         reason = None
     return Resolved(u, _dedupe(ts), reason)
+
+
+def code_table(prog: Program, facts: Facts, u: Use, base: int) -> list[Target]:
+    """Near pointers read from a table that lies in the code's own segment and that no code fills: the words from its
+    start up to where code begins, which is the first decoded instruction or the lowest address the table itself names
+    (a table does not overlap what it points to). Every word must name a byte of the space that is not inside a
+    decoded instruction and not inside the table. If one does not, or nothing ends the run, this is no such table and
+    nothing is taken. As for stored tables, the first entry may be the second word (an index that starts at 1)."""
+    sp = prog.spaces[u.ins.space]
+    starts, inside = facts.starts[u.ins.space], facts.inside[u.ins.space]
+    cb = prog.code_base(u.ins.space, u.ins.addr)
+    table = cb + base
+    for first in (0, 2):
+        found = _table_run(sp, starts, inside, cb, table, table + first)
+        if found:
+            return _dedupe([Target(nid(u.ins.space, t), f"entry {first // 2 + i} of {u.through}, in the bytes at {nid(u.ins.space, table + first + 2 * i)}", False)
+                            for i, t in enumerate(found)])
+    return []
+
+
+def _table_run(sp, starts: set[int], inside: set[int], cb: int, table: int, start: int) -> list[int]:
+    limit = math.inf  # the lowest address behind it that the table names
+    found: list[int] = []
+    pos = start
+    while not (pos in starts or pos in inside or pos + 1 in starts or limit <= pos + 1):
+        if pos + 2 > len(sp.data) or len(found) == TABLE_SPAN:
+            return []
+        t = cb + struct.unpack_from("<H", sp.data, pos)[0]
+        if t not in sp or t in inside or table <= t <= pos + 1:
+            return []
+        found.append(t)
+        limit = min(limit, t) if t > pos else limit
+        pos += 2
+    return found
 
 
 def proven(resolved: list[Resolved]) -> dict[str, list[str]]:
@@ -783,8 +882,11 @@ def describe_load(p: PointerLoad) -> str:
     elif w[0] == "arg":
         into = f"passed to {w[1]}"
     elif w[0] == "vector":
-        into = f"installed as the INT {w[1]:02X}h handler"
+        into = f"installed as {vector_text(w[1])}"
     else:
         into = "pushed and entered with retf"
     return f"far pointer {fmt_seg(p.seg)}:{p.off:04x} built at {p.off_site}, {into} at {p.site}"
 
+
+def vector_text(n: int | None) -> str:
+    return "an interrupt handler (the vector number is not a constant there)" if n is None else f"the INT {n:02X}h handler"

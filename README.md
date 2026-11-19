@@ -60,6 +60,7 @@ Tools at a glance: `next_work`, `module`, `trace`, `interrupts`, `dos_port`, `do
 The MCP server reads a generated tree: `navigation/callgraph.json` plus one control-flow listing per function.
 `scripts/build_callgraph.py` (package `scripts/dosgraph/`) builds that tree from a directory of 16-bit DOS
 executables: MZ and `.COM` programs, EXEPACK-packed images, Turbo Pascal INT 3Fh overlays, RTLink/Plus overlay sections,
+Microsoft LINK overlays,
 driver modules and the batch files that run them. It decodes by recursive descent from proven entry points, resolves
 calls through stored pointers, links programs that start or load each other, and records why anything stays
 unresolved. It is tuned for real-mode DOS and Turbo Pascal-era toolchains;

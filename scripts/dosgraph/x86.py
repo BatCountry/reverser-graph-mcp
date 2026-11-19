@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from capstone import CS_ARCH_X86, CS_MODE_16, Cs
 from capstone import x86_const as X
 
-from .binary import Program, nid
+from .binary import OVERLAY_TRAP, Program, nid
 
 PREFIXES = {0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3}
 NON_8086_PREFIXES = {0x64, 0x65, 0x66, 0x67}
@@ -30,6 +30,7 @@ class Insn:
     near_target: int | None = None  # same-space target before stub resolution
     far: tuple[int, int] | None = None  # (segment, offset) as encoded (unrelocated)
     far_relocated: bool | None = None
+    overlay: tuple[int, int] | None = None  # Microsoft LINK overlay call: (segment number, offset) after `int 3Fh`
     non8086: bool = False
 
     @property
@@ -96,6 +97,14 @@ class Decoder:
         data = sp.data
         if addr not in sp:
             return None
+        # Microsoft LINK overlay call: `int 3Fh; db segment number; dw offset`, a far call through the overlay manager.
+        if self.prog.link_segments and data[addr : addr + 2] == OVERLAY_TRAP:
+            raw = data[addr : addr + 5]
+            if len(raw) < 5:
+                return Insn(space, addr, len(raw), raw, "(bad)", "", "invalid")
+            number, off = raw[2], int.from_bytes(raw[3:], "little")
+            return Insn(space, addr, 5, raw, "int", f"0x3f  ; overlay call: segment {number}, offset {off:#x}", "call",
+                        overlay=(number, off))
         # Borland 8087 emulator: INT 34h..3Bh stand for WAIT+ESC D8..DF and are followed by the operand bytes.
         if data[addr] == 0xCD and addr + 1 < len(data) and 0x34 <= data[addr + 1] <= 0x3E:
             n = data[addr + 1]
@@ -195,7 +204,9 @@ def classify(ins: Insn, relocated_words: set[int], root_space: str) -> None:
 
 
 def target_of(prog: Program, ins: Insn) -> tuple[str | None, str]:
-    """Resolved node id of a direct transfer (INT 3Fh stubs followed) and how it was resolved."""
+    """Resolved node id of a direct transfer (INT 3Fh stubs and overlay calls followed) and how it was resolved."""
+    if ins.overlay is not None:
+        return prog.overlay_call(*ins.overlay)
     if ins.far is not None:
         seg, off = ins.far
         if not ins.far_relocated:

@@ -58,7 +58,8 @@ Ids are stable across rebuilds as long as the bytes are, which is what lets prog
 ```
 game.py     inventory: which files are programs, which overlay file belongs to which program, batch files
 binary.py   loading: MZ header, relocations, .COM at 100h, modules at 0, INT 3Fh overlay stubs + .OVR,
-            appended overlay sections (RTLink/Plus); address spaces and far-address resolution
+            appended overlay sections (RTLink/Plus), appended overlay images (Microsoft LINK); address spaces and
+            far-address resolution
 exepack.py  unpack EXEPACK images before anything else looks at them
 x86.py      capstone decoding (16-bit) and classification of control transfers
 flow.py     recursive descent, function boundaries, non-returning fixpoint, control dependence
@@ -76,8 +77,13 @@ Each program is analysed on its own (steps 2-5 of the generated README), then th
 A program contributes one space for its load image plus one per overlay module or overlay section. Spaces have a
 `code_base` (where segment 0 of the image sits) so a far call `lcall seg, off` resolves to (space, offset) through the
 relocation table: relocated segment words name image segments, unrelocated ones name overlay stub segments. Overlay
-stubs are resolved to the overlay module entry they load, and the stub addresses become `aliases`. Unpacked bytes
-(EXEPACK, container records) have no file offset; nodes record `file_offset: null` instead of a wrong number.
+stubs are resolved to the overlay module entry they load, and the stub addresses become `aliases`. Microsoft LINK
+writes no stubs: a call into an overlay is `int 3Fh; db segment number; dw offset` in place of the far call, decoded
+as one five-byte call whose target comes from the segment table in the root's data (found as the one place in the
+image that fits the appended overlays, never by address). An `int 3Fh` reached in a program whose overlays were not
+parsed aborts the build, because the bytes behind it are call data and would otherwise be listed as instructions.
+Unpacked bytes (EXEPACK, container records) have no file offset; nodes record `file_offset: null` instead of a wrong
+number.
 
 ### Functions
 
@@ -107,6 +113,23 @@ use, and `resolve()` connects uses to the pointers stored where they read. That 
 is code. A built pointer nothing is seen calling through is only a guess: its target becomes a provisional function
 only if it decodes as a self-contained procedure that touches no already-decoded code.
 
+The load image is read under the same model, because a linker writes pointers the code never builds:
+
+* A variable or table entry whose segment word is relocated holds a far pointer before any code runs, so a call
+  through it reaches that pointer as it reaches a stored one. A table run continues only over entries that point at
+  code (into an overlay, or into a segment that holds decoded instructions and not past the next segment's start): a
+  far pointer to data looks the same in the bytes.
+* A far address in a segment that holds no decoded instruction, pointing at code, is a guess like a built pointer
+  nothing calls through. In a segment that holds code the same bytes may be the operand of an instruction nothing
+  reaches yet, so they are skipped; so is a segment word right behind another one (a list of segments).
+* A near call through a table in the code's own segment that no code fills (`call word ptr cs:[bx + T]`, or
+  DS-relative where DS is that segment) has nothing bounding its index, so the bytes bound the table: it runs from T
+  (or T+2, for an index that starts at 1) up to where code begins, which is the first decoded instruction or the
+  lowest address the table itself names. Every word in that span must be an address in the space that is neither
+  inside a decoded instruction nor inside the table; otherwise this is no such table and nothing is taken.
+* `INT 21h/25h` with a constant DS:DX installs a handler whatever AL holds; where AL is not a constant the handler
+  is a proven function for an unknown vector.
+
 ### Links between programs
 
 `interrupt` (an `int n` site to the handlers resident programs install for n), `runs` (a function names another
@@ -128,7 +151,7 @@ a far call through that variable.
 |---|---|---|
 | 16-bit decoding, segment:offset addresses, paragraphs, near/far calls, `retf` dispatch | x86.py, binary.py, pointers.py, tables.py | x86 real mode |
 | Relocations are segment words; DGROUP is a relocated segment loaded into DS at startup | binary.py, pointers.dgroup | MZ, Borland toolchains |
-| Overlays are INT 3Fh stub segments plus a `TPOV`/`FBOV` file; RTLink/Plus sections appended to the EXE | binary.py | Turbo Pascal 5/6, RTLink |
+| Overlays are INT 3Fh stub segments plus a `TPOV`/`FBOV` file; RTLink/Plus sections or Microsoft LINK overlay images appended to the EXE | binary.py | Turbo Pascal 5/6, RTLink, Microsoft LINK |
 | `.COM` at 100h, PSP below it; modules loaded at offset 0 with a `jmp` table | binary.load_executable | DOS |
 | OS services by INT 21h AH (exec 4Bh, open 3Dh, set vector 25h, get vector 35h, TSR 31h/INT 27h) | links.py, pointers.py, flow.py | DOS |
 | Batch file semantics (COMMAND.COM search order, `if`, `goto`) | links.py | DOS |
@@ -144,7 +167,12 @@ writes addresses (`frames`) by voting over edges, and knows the x86 call spellin
 
 Known gaps even within its domain: Borland C sparse `switch` (a compare loop over a value table, then
 `jmp cs:[bx+2N]`) and function pointers in record fields are not followed; aligned indexed writes only mark a table
-"also filled at run time".
+"also filled at run time". A near pointer in initialised data has no relocation to mark it, so a near call through a
+variable no code fills stays unresolved. A table read by an indirect jump is followed only when the code bounds its
+index; the bound taken from the bytes for near call tables is not applied to it. A segment in which nothing is decoded
+is taken for data, so the far-call operands of a code segment nothing reaches name their targets as guesses. A handler
+a program installs for itself is listed, but its own `int n` sites get no edge to it. The Microsoft LINK overlay
+interrupt is taken to be 3Fh, the default; a program linked with another number aborts.
 
 ## Broadening it
 
@@ -201,6 +229,6 @@ per-function listings, conditions, links between programs, and a format the serv
 ## Testing
 
 Synthetic binaries, built byte by byte in `scripts/tests/conftest.py` (`mz()`, `build()` for overlays,
-`exepack()`, `rtlink()`), drive every rule; untrusted input (headers, tables, declarations) has boundary tests for
+`exepack()`, `rtlink()`, `link_overlays()`), drive every rule; untrusted input (headers, tables, declarations) has boundary tests for
 every branch, and the suite holds 100% branch coverage. Acceptance tests on real inputs, which require a checked tree
 to equal a fresh build, live with those inputs outside this repository.

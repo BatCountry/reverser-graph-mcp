@@ -69,7 +69,7 @@ def installs(an: Analysis) -> dict[int, list[tuple[str, str, bool]]]:
     out: dict[int, list[tuple[str, str, bool]]] = collections.defaultdict(list)
     seen = set()
     for tgt, n, site in an.facts.vectors:
-        if tgt in an.descents and (n, tgt) not in seen:
+        if n is not None and tgt in an.descents and (n, tgt) not in seen:
             seen.add((n, tgt))
             out[n].append((tgt, f"installed with INT 21h/25h at {site}", False))
     numbers: dict[tuple, list[tuple[int, str]]] = collections.defaultdict(list)

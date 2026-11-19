@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import collections
+import struct
 from dataclasses import dataclass, field
 
-from .binary import Program, nid, split_id
+from .binary import OVERLAY_TRAP, Program, nid, split_id
+from .errors import FormatError
 from .x86 import (
     Decoder,
     Insn,
@@ -20,6 +22,7 @@ from .tables import JumpTable, resolve
 
 EXIT = -1
 TRAIL = 24  # instructions of the path into a run kept for reading a jump table's index range
+OVERLAY_CALL_NOT_PARSED = "overlay-call-not-parsed"  # hazard: `int 3Fh` in a program whose overlays this tool did not parse
 
 
 @dataclass
@@ -101,7 +104,7 @@ def descend(
             if space == prog.root and prog.stub_table_of(a):
                 d.dirty = True
                 _hazard(d, "flow-into-overlay-stub-table", space, a,
-                        f"flow reaches {prog.stub_table_of(a)} INT 3Fh stub table at {a:#x}; "
+                        f"flow reaches the {prog.stub_table_of(a)} at {a:#x}; "
                         f"previous {prev[-1].bytes_text if prev else via}")
                 break
             ins = dec(space, a)
@@ -109,6 +112,11 @@ def descend(
                 d.dirty = True
                 _hazard(d, "invalid-opcode-in-flow", space, a,
                         f"undecodable bytes {ins.raw.hex()} reached; previous {prev[-1].bytes_text if prev else via}")
+                break
+            if ins.kind == "int" and ins.raw[-2:] == OVERLAY_TRAP:
+                d.dirty = True
+                _hazard(d, OVERLAY_CALL_NOT_PARSED, space, a,
+                        "int 3Fh: a call through an overlay manager; the bytes after it are call data, not instructions")
                 break
             d.insns[a] = ins
             if ins.non8086:
@@ -319,13 +327,19 @@ def analyze(prog: Program, dec: Decoder, stop_on_fallthrough: bool = False) -> A
         for tgt, n, site in facts.vectors:
             if _valid_root(prog, tgt):
                 kinds[tgt].add("interrupt-vector")
-                proof[tgt].append(f"installed as the INT {n:02X}h handler at {site} (INT 21h/25h)")
+                proof[tgt].append(f"installed as {pointers.vector_text(n)} at {site} (INT 21h/25h)")
         proven = {t for t in proof if t not in roots}
         fresh = _pointer_guesses(prog, dec, descents, roots | proven, noreturn, address_taken, rejected,
                                  stop_on_fallthrough, facts)
         for k in address_taken:
             kinds[k].add("address-taken")
         if not fresh and not proven:
+            for fid, d in sorted(descents.items()):
+                for h in d.hazards:
+                    if h["kind"] == OVERLAY_CALL_NOT_PARSED:
+                        raise FormatError(f"{prog.exe_name}: {fid} reaches `int 3Fh` at {nid(h['space'], h['addr'])}, a call through an "
+                                          "overlay manager, and the program has no overlay layout this tool parses (the bytes after "
+                                          "the instruction are call data, so the code behind it cannot be followed)")
             return Analysis(descents, noreturn, dict(kinds), address_taken, rejected, dict(proof), resolved, facts, dg)
         for k, v in fresh.items():
             address_taken[k] = v
@@ -337,9 +351,11 @@ def _pointer_guesses(prog, dec, descents, roots, noreturn, address_taken, reject
                      facts: pointers.Facts) -> dict[str, list[str]]:
     """Code that exists only because its address is built somewhere (no transfer to it is known yet).
 
-    * every constant far pointer the code builds (pointers.py: stored, passed, pushed), and
+    * every constant far pointer the code builds (pointers.py: stored, passed, pushed),
     * a `mov r16/r/m16, imm16` / `push imm16` that is not part of one and not a relocated segment word, whose
-      value (+ the code segment base) is the first byte of a run no instruction covers.
+      value (+ the code segment base) is the first byte of a run no instruction covers, and
+    * every far pointer the linker left in the program's data: a relocated segment word behind an offset word, in a
+      segment of the load image that holds no decoded instruction, pointing at code (pointers.code_pointer).
     A built pointer may be a string or a record as easily as a procedure, and a number may be a count
     (`mov cx, 21h; mov bx, 714h; mov es, bx`), so each candidate must decode as a
     self-contained 8086 procedure: clean flow, a terminator, no zero fill, no Pascal string at the start,
@@ -347,9 +363,7 @@ def _pointer_guesses(prog, dec, descents, roots, noreturn, address_taken, reject
     provisional functions (Analysis.provisional); candidates that are already functions only gain evidence.
     Returns accepted candidates -> evidence.
     """
-    reached: dict[str, set[int]] = collections.defaultdict(set)
-    for r, d in descents.items():
-        reached[split_id(r)[0]].update(d.insns)
+    reached = facts.starts
     cand: dict[str, list[str]] = collections.defaultdict(list)
     for p in facts.loads:
         if _valid_root(prog, p.target):
@@ -367,12 +381,16 @@ def _pointer_guesses(prog, dec, descents, roots, noreturn, address_taken, reject
             base = prog.code_base(sp_name, a)
             if base + imm in run_starts:
                 cand[nid(sp_name, base + imm)].append(f"immediate {imm:04x} at {site}")
-    interior: dict[str, set[int]] = {}
-    for sp_name, addrs in reached.items():
-        s: set[int] = set()
-        for a in addrs:
-            s.update(range(a + 1, dec.cache[(sp_name, a)].end))
-        interior[sp_name] = s
+    root = prog.spaces[prog.root]
+    for p in sorted(root.relocated_words):
+        pair = root.data[max(p - 2, 0) : p + 2]
+        if len(pair) < 4 or prog.code_base(prog.root, p) // 16 in facts.code_segments or not root.relocated_words.isdisjoint((p - 2, p - 1)):
+            continue  # cut off; an operand of code nothing reaches yet; a segment word behind another one (a list of segments)
+        off, seg = struct.unpack("<HH", pair)
+        tgt = pointers.code_pointer(prog, facts.code_segments, seg, off, prog.root)
+        if _valid_root(prog, tgt):
+            cand[tgt].append(f"far pointer {seg:04x}h:{off:04x} in the load image at {nid(prog.root, p - 2)}")
+    interior = facts.inside
     starts: dict[str, set[int]] = collections.defaultdict(set)
     for r in roots:
         s, o = split_id(r)

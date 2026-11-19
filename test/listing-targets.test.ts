@@ -69,6 +69,22 @@ describe("annotateCallTargets", () => {
     expect(annotateCallTargets(g, g.nodes.get("m-1:0010")!, "0012 e81b00 call 0x30")).toBe("0012 e81b00 call 0x30");
     expect(annotateCallTargets(g, g.nodes.get("m-1:0010")!, "0012\te81b00\tcall 0x30")).toBe("0012\te81b00\tcall 0x30");
   });
+  test("an overlay manager call (`int 3Fh` with the segment and offset behind it) is a call line", () => {
+    const blank = { file_offset: 0, source_file: "MAIN.EXE", listing: null, entrypoint: false };
+    const instruction = "int 0x3f  ; overlay call: segment 2, offset 0x1031";
+    const g = new CallGraph({
+      aliases: {},
+      nodes: {
+        "MAIN_EXE:0000": { id: "MAIN_EXE:0000", kind: "function", space: "MAIN_EXE", address: 0, ...blank },
+        "MAIN_EXE-0002:1031": { id: "MAIN_EXE-0002:1031", kind: "function", space: "MAIN_EXE-0002", address: 0x1031, ...blank },
+      },
+      edges: [{ source: "MAIN_EXE:0000", target: "MAIN_EXE-0002:1031", instruction, instruction_offset: "MAIN_EXE:001b", returns: true, conditions: [] }],
+    });
+    const line = `001b  cd3f023110    ${instruction}`;
+    expect(annotateCallTargets(g, g.nodes.get("MAIN_EXE:0000")!, `${line}\n0020  cd21          int 0x21`)).toBe(
+      `${CALL_TARGET_HEADER}\n${line}\t; → MAIN_EXE-0002:1031\n0020  cd21          int 0x21`,
+    );
+  });
   test.each([
     [MAX_LINE_TARGETS, ""],
     [MAX_LINE_TARGETS + 1, ", … (+1 more: the module tool lists them as callees)"],

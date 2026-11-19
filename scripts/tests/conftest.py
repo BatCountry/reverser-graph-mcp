@@ -190,6 +190,49 @@ def rtlink(root: bytes, sections: list[Section], stubs: list[tuple[int, int, int
     return exe + bytes((exe_len + 15) // 16 * 16 - exe_len) + body[: len(body) - truncate]
 
 
+@dataclass
+class Overlay:
+    load: int  # paragraph its code is loaded at
+    code: bytes
+    fixups: list[tuple[int, int]] = field(default_factory=list)  # (seg, off), seg counted from the program's load segment
+    segments: list[int] | None = None  # base segments of its code segments; default: the load segment alone
+
+
+def overlay_call(segment: int, off: int) -> bytes:
+    """`int 3Fh; db segment number; dw offset`: how Microsoft LINK writes a far call into an overlay."""
+    return b"\xcd\x3f" + bytes([segment]) + struct.pack("<H", off)
+
+
+def link_overlays(root: bytes, overlays: list[Overlay], *, size: int = 0x200, table_at: int = 0x100, relocs=(), entry=(0, 0),
+                  rows=None, counts=None, relocated=None, numbers=None, tail: bytes = b"", packed: bool = False) -> bytes:
+    """A program linked with Microsoft LINK overlays: `root` code at image 0 (zero-filled to `size`), the segment table
+    at `table_at` (`dw segments; dw overlays`, a base word per segment, an overlay byte per segment; segment 0 is the
+    root at base 0, then come each overlay's segments), and every overlay as an MZ image of its own on the next
+    512-byte page (header word 1Ah = its number, relocation entries `off, seg`). `packed`: the root is EXEPACK-packed.
+    `rows` ((overlay, base) per segment), `counts` (the two size words), `relocated` (which base words are relocated),
+    `numbers` and `tail` replace parts to build broken files."""
+    image = bytearray(root.ljust(size, b"\x00"))
+    if rows is None:
+        rows = [(0, 0)] + [(k, base) for k, o in enumerate(overlays, 1) for base in (o.segments or [o.load])]
+    struct.pack_into("<HH", image, table_at, *(counts or (len(rows), len(overlays) + 1)))
+    for g, (owner, base) in enumerate(rows):
+        struct.pack_into("<H", image, table_at + 4 + 2 * g, base)
+        image[table_at + 4 + 2 * len(rows) + g] = owner
+    marks = [*relocs, *(table_at + 4 + 2 * g for g in (range(len(rows)) if relocated is None else relocated))]
+    out = exepack(bytes(image), relocs=marks, entry=entry) if packed else mz(bytes(image), relocs=marks, entry=entry)
+    for k, o in enumerate(overlays):
+        out += bytes(-len(out) % 512)
+        paras = (0x1C + 4 * len(o.fixups) + 15) // 16
+        total = paras * 16 + len(o.code)
+        hdr = bytearray(paras * 16)
+        struct.pack_into("<2s13H", hdr, 0, b"MZ", total % 512, (total + 511) // 512, len(o.fixups), paras, 0, 0xFFFF, 0, 0, 0, 0, 0,
+                         0x1C, numbers[k] if numbers else k + 1)
+        for i, (seg, off) in enumerate(o.fixups):
+            struct.pack_into("<HH", hdr, 0x1C + 4 * i, off, seg)
+        out += bytes(hdr) + o.code
+    return out + tail
+
+
 def patch(data: bytes, pos: int, new: bytes) -> bytes:
     return data[:pos] + new + data[pos + len(new) :]
 

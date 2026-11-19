@@ -567,5 +567,193 @@ def test_describe_load_for_every_destination():
     assert "stored into field +04h of a record" in pointers.describe_load(load(("field", 4, ("site", "x"))))
     assert "passed to X" in pointers.describe_load(load(("arg", "X")))
     assert "installed as the INT 1Ch handler" in pointers.describe_load(load(("vector", 0x1C)))
+    assert "installed as an interrupt handler (the vector number is not a constant there) at S:2" in pointers.describe_load(load(("vector", None)))
     assert pointers.describe_load(load(("retf",))) == "far pointer 001fh:0022 built at S:1, pushed and entered with retf at S:2"
     assert isinstance(PtrLo(("site", "x"), 0, "s"), PtrLo)
+
+
+# ---------------------------------------------------------------- far pointers the load image holds
+
+LCALL_CS = b"\x2e\xff\x1e"  # lcall cs:[imm16]
+LCALL_CS_DI = b"\x2e\xff\x9d"  # lcall cs:[di + imm16]
+SET_DS = b"\xb8\x04\x00\x8e\xd8"  # mov ax, 4; mov ds, ax, the 4 relocated (at 1): the data segment is at image 40h
+
+
+def far(off: int, seg: int = 0) -> bytes:
+    return w16(off) + w16(seg)
+
+
+def unknown(g, src: str, off: int) -> str:
+    [e] = site(g, src, off)
+    return g["nodes"][e["target"]]["reason"]
+
+
+def test_call_through_a_far_pointer_the_load_image_holds():
+    root = code(0x60, {0: LCALL_CS + w16(0x50) + DOS_EXIT, 0x30: RETF, 0x50: far(0x30)})
+    _b, _p, _d, an, g = run(root, relocs=[0x52])
+    [e] = site(g, f"{R}:0000", 0)
+    assert e["target"] == f"{R}:0030" and e["through"] == "0000h:[0050]" and "provisional" not in e
+    assert an.proof[f"{R}:0030"] == [f"lcall cs:[0x50] at {R}:0000 (in the load image at {R}:0050)"]
+    assert g["nodes"][f"{R}:0030"]["provisional"] is False and an.address_taken == {}
+
+
+@pytest.mark.parametrize("pointer,relocs", [
+    (far(0x30), []),  # no relocated segment word: two numbers
+    (far(0x30), [0x50]),  # the relocated word is the low one: not this variable's segment
+    (far(0x30, 0x700), [0x52]),  # relocated, but it names no byte of the program
+])
+def test_words_in_the_load_image_that_are_no_far_pointer(pointer, relocs):
+    root = code(0x60, {0: LCALL_CS + w16(0x50) + DOS_EXIT, 0x30: RETF, 0x50: pointer})
+    _b, _p, _d, an, g = run(root, relocs=relocs)
+    assert unknown(g, f"{R}:0000", 0) == "nothing stores a constant pointer into 0000h:[0050]" and an.proof == {}
+
+
+def test_a_far_pointer_in_the_data_segment_and_its_copy():
+    # ds:[0010] is image 50h; [20] := [10], then a call through each
+    copy = b"\xa1\x10\x00\x8b\x16\x12\x00\xa3\x20\x00\x89\x16\x22\x00"
+    parts = [SET_DS, copy, lcall_mem(0x10), lcall_mem(0x20), DOS_EXIT]
+    _b, _p, _d, an, g = run(code(0x60, {0: b"".join(parts), 0x30: RETF, 0x50: far(0x30)}), relocs=[1, 0x52])
+    assert [e["target"] for e in site(g, f"{R}:0000", at(parts, 2)) + site(g, f"{R}:0000", at(parts, 3))] == [f"{R}:0030"] * 2
+    assert an.proof[f"{R}:0030"] == [
+        f"lcall [0x10] at {R}:0013 (in the load image at {R}:0050)",
+        f"lcall [0x20] at {R}:0017 (in the load image at {R}:0050, copied from ds:[0010] at {R}:000c)"]
+
+
+def test_a_far_pointer_held_by_an_overlay():
+    mod = Module(code(0x20, {0: LCALL_CS + w16(0x10) + RETF, 0x10: far(0x30)}), [0], fixups=[0x12])
+    b, _p, _d, an, g = run(code(0x40, {0: DOS_EXIT, 0x30: RETF}), [mod])
+    m = b.module_id(0)
+    assert an.proof[f"{R}:0030"] == [f"lcall cs:[0x10] at {m}:0000 (in the load image at {m}:0010)"]
+
+
+@pytest.mark.parametrize("entries,relocs,operand,targets", [
+    ([far(0x30), far(0x34), far(8, 6)], [0x52, 0x56, 0x5A], 0x50, ["0030", "0034"]),  # ends at a pointer into a segment without code
+    ([far(0x30), far(0x34), far(0x64), far(8, 6)], [0x52, 0x56, 0x5A, 0x5E], 0x50, ["0030", "0034"]),  # past the end of its segment
+    ([far(0x30), far(0x34), far(0x38)], [0x52, 0x56], 0x50, ["0030", "0034"]),  # ends at words that are not relocated
+    ([far(0x30), far(0x34)], [0x52, 0x56], 0x4C, ["0030", "0034"]),  # the index starts at 1
+    ([far(0x30), far(0x34)], [0x52, 0x56], 0x48, []),  # two entries before it: another table
+    ([far(8, 6), far(0xC, 6)], [0x52, 0x56], 0x50, []),  # a table of data pointers
+])
+def test_far_table_the_load_image_holds(entries, relocs, operand, targets):
+    root = code(0x70, {0: LCALL_CS_DI + w16(operand) + DOS_EXIT, 0x30: RETF, 0x34: RETF, 0x38: RETF, 0x50: b"".join(entries)}, b"\x00")
+    _b, _p, _d, an, g = run(root, relocs=relocs)
+    es = site(g, f"{R}:0000", 0)
+    assert [e["target"] for e in es if not e["target"].startswith("unknown:")] == [f"{R}:{t}" for t in targets]
+    if not targets:
+        assert g["nodes"][es[0]["target"]]["reason"] == f"nothing stores constant pointers into the table at 0000h:[index+{operand:04x}]"
+
+
+def test_far_table_entries_are_named_by_where_they_lie():
+    root = code(0x70, {0: LCALL_CS_DI + w16(0x4C) + DOS_EXIT, 0x30: RETF, 0x34: RETF, 0x50: far(0x30) + far(0x34)}, b"\x00")
+    _b, _p, _d, an, _g = run(root, relocs=[0x52, 0x56])
+    assert an.proof[f"{R}:0034"] == [f"lcall cs:[di + 0x4c] at {R}:0000 (entry 2 of 0000h:[index+004c], in the load image at {R}:0054)"]
+
+
+def test_far_pointers_in_data_segments_are_guesses():
+    # code in segment 0; data in segment 4 (image 40h): four far pointers, then two more segment words
+    data = far(0x30) + far(0x38) + far(8, 4) + far(0x44) + w16(0) + w16(0)
+    root = code(0x60, {0: SET_DS + call(5, 0x38) + DOS_EXIT, 0x20: far(0x34), 0x30: RETF, 0x34: RETF, 0x38: b"\xc3", 0x40: data}, b"\x00")
+    _b, _p, _d, an, g = run(root, relocs=[1, 0x22, 0x42, 0x46, 0x4A, 0x4E, 0x50, 0x52])
+    assert an.address_taken == {
+        f"{R}:0030": [f"far pointer 0000h:0030 in the load image at {R}:0040"],  # code nothing else names: a guess
+        f"{R}:0038": [f"far pointer 0000h:0038 in the load image at {R}:0044"]}  # a known function gains the evidence
+    assert g["nodes"][f"{R}:0030"]["provisional"] is True and g["nodes"][f"{R}:0038"]["provisional"] is False
+    # 0004:0008 points at data; 0000:0044 is past the end of segment 0; a segment word behind another one is a list of
+    # segments; 0000:0034 at 20h lies in a segment holding code, where it may be an operand of code nothing reaches yet
+    assert an.rejected_pointers == {} and f"{R}:0034" not in an.descents
+
+
+# ---------------------------------------------------------------- near tables in the code's own segment
+
+CALL_CS_BX = b"\x2e\xff\x97"  # call word ptr cs:[bx + imm16]
+RET = b"\xc3"
+NO_TABLE = "nothing stores constant pointers into the table at 0000h:[index+0010]"
+
+
+def words(*ns: int) -> bytes:
+    return b"".join(w16(n) for n in ns)
+
+
+def test_near_table_ending_at_decoded_code():
+    root = code(0x40, {0: call(0, 0x20) + DOS_EXIT, 0x1A: words(0x30, 0x34, 0x38), 0x20: CALL_CS_BX + w16(0x1A) + RET,
+                       0x30: RET, 0x34: RET, 0x38: RET})
+    _b, _p, _d, an, g = run(root)
+    es = site(g, f"{R}:0020", 0x20)
+    assert [e["target"] for e in es] == [f"{R}:0030", f"{R}:0034", f"{R}:0038"]
+    assert es[0]["through"] == "0000h:[index+001a]" and "provisional" not in es[0]
+    assert an.proof[f"{R}:0034"] == [f"call word ptr cs:[bx + 0x1a] at {R}:0020 (entry 1 of 0000h:[index+001a], in the bytes at {R}:001c)"]
+    assert "pointer-target" in an.root_kinds[f"{R}:0034"] and g["nodes"][f"{R}:0034"]["provisional"] is False
+
+
+@pytest.mark.parametrize("table,code_at,targets", [
+    (words(0x18, 0x1C, 0x18, 0x1C), {}, ["0018", "001c"]),  # ends at the lowest address it names
+    (words(0x17, 0x1C, 0x17), {0x17: RET}, ["0017", "001c"]),  # ... also with a byte to spare
+    (words(0x18, 0x1C, 0x16), {0x16: RET}, ["0016", "0018", "001c"]),  # an entry naming the byte behind itself ends it
+    (words(0x18, 0x1C, 0x0F, 0x1C), {0x0F: RET}, ["000f", "0018", "001c"]),  # the byte before the table is not in it
+])
+def test_near_table_ending_at_the_code_it_names(table, code_at, targets):
+    root = code(0x40, {0: CALL_CS_BX + w16(0x10) + DOS_EXIT, 0x10: table, 0x18: RET, 0x1C: RET, **code_at})
+    _b, _p, _d, _an, g = run(root)
+    assert [e["target"] for e in site(g, f"{R}:0000", 0)] == [f"{R}:{t}" for t in targets]
+
+
+@pytest.mark.parametrize("entry", [
+    0x7000,  # outside the program
+    0x0001,  # inside a decoded instruction
+    0x0010, 0x0012, 0x0014, 0x0015,  # inside the table: its first byte ... the entry's own second byte
+])
+def test_words_that_are_no_near_table(entry):
+    root = code(0x40, {0: CALL_CS_BX + w16(0x10) + DOS_EXIT, 0x10: words(0x18, 0x1C, entry, 0x1C), 0x18: RET, 0x1C: RET})
+    _b, _p, _d, an, g = run(root)
+    assert unknown(g, f"{R}:0000", 0) == NO_TABLE and an.proof == {}
+
+
+def test_near_table_that_nothing_ends(monkeypatch):
+    # the code it names lies before it, and it runs to the end of the image
+    image = code(0x20, {0: CALL_CS_BX + w16(0x1C) + DOS_EXIT, 0x10: RET, 0x1C: words(0x10, 0x10)})
+    prog = Program(mz(image), None, "MAIN.EXE")
+    an = analyze(prog, Decoder(prog), stop_on_fallthrough=True)
+    assert an.proof == {} and [r.reason for r in an.resolved] == ["nothing stores constant pointers into the table at 0000h:[index+001c]"]
+    # ... or past the longest table read
+    monkeypatch.setattr(pointers, "TABLE_SPAN", 1)
+    root = code(0x40, {0: CALL_CS_BX + w16(0x10) + DOS_EXIT, 0x10: words(0x18, 0x1C, 0x18, 0x1C), 0x18: RET, 0x1C: RET})
+    _b, _p, _d, an, g = run(root)
+    assert unknown(g, f"{R}:0000", 0) == NO_TABLE
+
+
+def test_near_table_indexed_from_one():
+    # the operand names the last two bytes of the code before the table
+    root = code(0x40, {0: CALL_CS_BX + w16(0x07) + DOS_EXIT, 9: words(0x18, 0x1C) * 3 + w16(0x18), 0x18: RET, 0x1C: RET})
+    _b, _p, _d, an, g = run(root)
+    assert [e["target"] for e in site(g, f"{R}:0000", 0)] == [f"{R}:0018", f"{R}:001c"]
+    assert an.proof[f"{R}:001c"] == [f"call word ptr cs:[bx + 7] at {R}:0000 (entry 2 of 0000h:[index+0007], in the bytes at {R}:000b)"]
+
+
+@pytest.mark.parametrize("use,reason", [
+    (b"\x90\xff\x97", "nothing stores constant pointers into the table at ds:[index+0010]"),  # read through DS, which is not known to be this segment
+    (b"\x2e\xff\xa7", "jump table not followed: "),  # a jump: its cases belong to the function (tables.py)
+    (b"\x2e\xff\x9f", NO_TABLE),  # a far call: these words are no far pointers
+])
+def test_only_a_near_call_reads_a_table_from_its_own_segment(use, reason):
+    root = code(0x40, {0: use + w16(0x10) + DOS_EXIT, 0x10: words(0x18, 0x1C, 0x18, 0x1C), 0x18: RET, 0x1C: RET})
+    _b, _p, _d, an, g = run(root)
+    assert unknown(g, f"{R}:0000", 0 if use[0] != 0x90 else 1).startswith(reason) and an.proof == {}
+
+
+def test_near_table_read_through_ds_in_a_driver_and_in_an_overlay():
+    # mov ax, cs; mov ds, ax: the data segment is the code segment
+    root = code(0x40, {0: b"\x8c\xc8\x8e\xd8\xff\x97\x10\x00" + DOS_EXIT, 0x10: words(0x18, 0x1C, 0x18, 0x1C), 0x18: RET, 0x1C: RET})
+    _b, _p, _d, _an, g = run(root)
+    es = site(g, f"{R}:0000", 4)
+    assert [e["target"] for e in es] == [f"{R}:0018", f"{R}:001c"] and es[0]["through"] == "ds:[index+0010]"
+    mod = Module(code(0x20, {0: CALL_CS_BX + w16(0x10) + RETF, 0x10: words(0x18, 0x1C, 0x18, 0x1C), 0x18: RET, 0x1C: RET}), [0])
+    b, _p, _d, an, _g = run(code(0x10, {0: DOS_EXIT}), [mod])
+    m = b.module_id(0)
+    assert an.proof[f"{m}:001c"] == [f"call word ptr cs:[bx + 0x10] at {m}:0000 (entry 1 of {m}:[index+0010], in the bytes at {m}:0012)"]
+
+
+def test_near_table_that_code_writes_is_not_read_from_the_bytes():
+    store = b"\x2e\x89\x85\x10\x00"  # mov cs:[di + 10h], ax
+    root = code(0x40, {0: store + CALL_CS_BX + w16(0x10) + DOS_EXIT, 0x10: words(0x18, 0x1C, 0x18, 0x1C), 0x18: RET, 0x1C: RET})
+    _b, _p, _d, an, g = run(root)
+    assert unknown(g, f"{R}:0000", 5) == f"0000h:[index+0010] is also written through an index (at {R}:0000)" and an.proof == {}

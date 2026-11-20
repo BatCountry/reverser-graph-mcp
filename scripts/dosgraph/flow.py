@@ -193,7 +193,7 @@ def descend(
             a = ins.end
     if d.tables:
         preds = straight_preds(d)
-        shared = {site for site, t in d.tables.items() if not _single_entry(d.trails[site][t.guard_from:], preds)}
+        shared = {site for site, t in d.tables.items() if not _guarded(d.trails[site][t.guard_from:], t.loops, preds)}
         if shared:
             return descend(prog, dec, root_id, func_starts, noreturn, stop_on_fallthrough, unresolved | shared)
     # instruction streams of this function that overlap (jump into the middle of an instruction)
@@ -208,9 +208,21 @@ def descend(
     return d
 
 
-def _single_entry(path: list[Insn], preds: dict[int, list[int]]) -> bool:
-    """Every instruction after the first is reached only from the one before it."""
-    return all(set(preds.get(q.addr, [])) == {p.addr} for p, q in zip(path, path[1:]))
+def _guarded(path: list[Insn], loops: list[list[Insn]], preds: dict[int, list[int]]) -> bool:
+    """Every instruction after the first is reached only from the one before it. The first instruction of a counted
+    loop on the path is also reached from the `loop` that closes it, and the way there (`loops`: from the branch
+    that leaves the loop to that `loop`) is as straight."""
+    back: dict[int, int] = {}
+    for tail in loops:
+        if any(q.addr == tail[-1].near_target for q in path[1:]):
+            if not _single_entry(tail, preds, {}):
+                return False
+            back[tail[-1].near_target] = tail[-1].addr
+    return _single_entry(path, preds, back)
+
+
+def _single_entry(path: list[Insn], preds: dict[int, list[int]], back: dict[int, int]) -> bool:
+    return all(set(preds.get(q.addr, [])) - {back.get(q.addr)} == {p.addr} for p, q in zip(path, path[1:]))
 
 
 def may_return(d: Descent, noreturn: set[str]) -> bool:
@@ -440,13 +452,16 @@ def _pointer_guesses(prog, dec, descents, roots, noreturn, address_taken, reject
 
 
 def successors(d: Descent) -> dict[int, list[tuple[int, str]]]:
-    """Instruction-level CFG of a descent.  EXIT stands for leaving the function."""
+    """Instruction-level CFG of a descent.  EXIT stands for leaving the function. A followed jump table leads to
+    each of its entries."""
     succ: dict[int, list[tuple[int, str]]] = {}
     for a, ins in d.insns.items():
         if a in d.term:
             out = [(EXIT, "")]
         elif a in d.cont:
             out = [(d.cont[a] if d.cont[a] in d.insns else EXIT, "")]
+        elif a in d.tables:
+            out = [(t, "") for t in dict.fromkeys(t if t in d.insns else EXIT for t in d.tables[a].targets)]
         elif ins.kind == "jmp":
             t = ins.near_target if ins.far is None else None
             out = [(t if t in d.insns else EXIT, "")]
@@ -460,7 +475,8 @@ def successors(d: Descent) -> dict[int, list[tuple[int, str]]]:
 
 
 def control_dependence(d: Descent) -> dict[int, list[tuple[int, str]]]:
-    """For every instruction, the (jcc address, direction) pairs it is directly control dependent on."""
+    """For every instruction, the (jcc address, direction) pairs it is directly control dependent on. Which entry a
+    followed jump table takes is no such pair, so its cases depend on what the jump itself depends on."""
     if not d.insns:
         return {}
     succ = successors(d)
@@ -555,6 +571,18 @@ def control_dependence(d: Descent) -> dict[int, list[tuple[int, str]]]:
             while runner != ipdom[b] and runner != EXIT:
                 cd[runner].append((jcc, lab))  # each (branch, direction) walks a pdom-tree path once
                 runner = ipdom[runner]
+    dispatch = [b for b, body in blocks.items() if body[-1] in d.tables]
+    changed = bool(dispatch)
+    while changed:  # a table jump inside another's case inherits first
+        changed = False
+        for b in dispatch:
+            for t, _ in bsucc[b]:
+                runner = t
+                while runner != ipdom[b] and runner != EXIT:
+                    new = [c for c in cd[b] if c not in cd[runner]]
+                    cd[runner] += new
+                    changed = changed or bool(new)
+                    runner = ipdom[runner]
     return {a: sorted(cd[block_of[a]]) for a in d.insns if cd.get(block_of[a])}
 
 

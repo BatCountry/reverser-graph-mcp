@@ -632,14 +632,19 @@ class Program:
         return bases[bisect.bisect_right(bases, addr) - 1]
 
     def ds_loads(self) -> set[int]:
-        """Linear bases of the segments resident code loads into DS: `mov r16, SEG; mov ds, r16` with
-        the SEG word relocated (B8+r imm16, then 8E D8+r)."""
+        """Linear bases of the segments whose code loads DS with its own segment: `mov r16, SEG; mov ds, r16` with
+        the SEG word relocated (B8+r imm16, then 8E D8+r), or `mov r16, cs; mov ds, r16` (8C C8+r, 8E D8+r), which
+        names the segment the bytes are in."""
         if self._ds_loads is None:
             img, relocated = self.image, self.spaces[self.root].relocated_words
             self._ds_loads = {
                 struct.unpack_from("<H", img, p + 1)[0] * 16
                 for p in range(len(img) - 4)
                 if 0xB8 <= img[p] <= 0xBF and img[p + 3] == 0x8E and img[p + 4] == 0xD8 + img[p] - 0xB8 and p + 1 in relocated
+            } | {
+                self.code_base(self.root, p)
+                for p in range(len(img) - 3)
+                if img[p] == 0x8C and 0xC8 <= img[p + 1] <= 0xCF and img[p + 2] == 0x8E and img[p + 3] == 0xD8 + img[p + 1] - 0xC8
             }
         return self._ds_loads
 

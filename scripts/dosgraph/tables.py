@@ -3,7 +3,9 @@
 The index range comes from a small abstract interpretation of the straight-line path that leads to the
 jump (the run of instructions decoded before it, plus the run that branched into it): unsigned
 `cmp reg, imm` + `jcc` guards, and register arithmetic the dispatch idioms use (`sub bh, bh`,
-`sub bl, 0FAh`, `add bl, bl`, `shl bx, 1`, `and bx, 1Fh`, `mov bx, ax`, `xchg ax, bx`, ...). The table
+`sub bl, 0FAh`, `add bl, bl`, `shl bx, 1`, `and bx, 1Fh`, `mov bx, ax`, `xchg ax, bx`, ...). Where the path
+leaves a loop that CX counts (`mov cx, N; ...; loop`), a register every pass moves by the same constant holds
+its N values: the search of a value table that ends in `jmp cs:[bx + 2N]`. The table
 base is the code segment for a `cs:` override, or the code segment for a DS-relative table when code in
 that segment loads DS with its own segment (the DS = CS idiom of resident assembler modules). Every
 entry must decode as code in the same space. Anything else stays an unresolved indirect jump.
@@ -11,6 +13,7 @@ entry must decode as code in the same space. Anything else stays an unresolved i
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass, field
 
@@ -18,6 +21,8 @@ from .binary import Program
 from .x86 import Decoder, Insn
 
 MAX_ENTRIES = 256
+LOOP = 0x12  # Insn.cond of `loop` (E0..E2, loopne/loope/loop, are 10h..12h; they count CX down)
+LOOP_TAIL = 16  # instructions looked at, behind a branch, for the `loop` that closes the loop it leaves
 BASE_REG = {7: "bx", 4: "si", 5: "di"}
 FAMILY = {
     "al": "ax", "ah": "ax", "ax": "ax", "bl": "bx", "bh": "bx", "bx": "bx",
@@ -87,10 +92,22 @@ class JumpTable:
     index: Range  # byte offsets into the table the jump can use
     targets: list[int] = field(default_factory=list)  # one per entry, in table order
     guard_from: int = 0  # trail index from which the path to the jump must have a single entry
+    loops: list[list[Insn]] = field(default_factory=list)  # per counted loop on that path: its leaving branch ... its `loop`
+    keys: list[int] = field(default_factory=list)  # per entry, the value the code read through the index register
+    key_read: str = ""  # that read: "4688 (word ptr cs:[bx])"
 
     def describe(self) -> str:
         return (f"jump table {self.segment}:{self.offset:04x}, index {self.index.lo:#x}..{self.index.hi:#x} "
                 f"step {self.index.stride} ({len(self.targets)} entries): " + " ".join(f"{t:04x}" for t in self.targets))
+
+    def lines(self) -> list[str]:
+        """The table, and which value leads to which entry when the code read the value through the register it then
+        jumps through."""
+        if not self.keys:
+            return [self.describe()]
+        width = 2 if "byte" in self.key_read else 4
+        return [self.describe(), f"value read at {self.key_read} -> entry: "
+                + ", ".join(f"{k:0{width}x} -> {t:04x}" for k, t in zip(self.keys, self.targets))]
 
 
 def _imm(text: str) -> int | None:
@@ -241,12 +258,68 @@ class _Interp:
         start = min(origin, i) if cur is not None else i
         self.write(reg, base.clamp(lo, hi), start)
 
+    def loop_head(self, body: list[Insn]) -> None:
+        """The state at the first instruction of a loop that `loop` closes, on any of its passes; `body` is the
+        loop without that `loop`. With CX = N on entry and untouched by the body there are N passes, and a 16-bit
+        register the body only moves by constants (`add bx, 2`, `inc si`) holds start, start + step, ... Every other
+        register the body writes is unknown."""
+        steps: dict[str, int | None] = {}
+        for ins in body:
+            ops = [o.strip() for o in ins.op_str.split(",")] if ins.op_str else []
+            k = {"inc": 1, "dec": -1}.get(ins.mnemonic)
+            if ins.mnemonic in ("add", "sub") and len(ops) == 2 and (n := _imm(ops[1])) is not None:
+                k = n if ins.mnemonic == "add" else -n
+            if k is not None and ops[0] in FAMILY and _width(ops[0]) == 16 and steps.get(ops[0], 0) is not None:
+                steps[ops[0]] = steps.get(ops[0], 0) + k
+                continue
+            clobbered = self.regs if ins.kind not in ("other", "jcc") else {FAMILY[r] for r in self.dec.writes(ins) if r in FAMILY}
+            steps.update(dict.fromkeys(clobbered))
+        count, counted = self.read("cx")
+        passes = count.lo if count is not None and count.lo == count.hi and "cx" not in steps else 0  # CX = 0 is 65536 passes
+        for fam, step in steps.items():
+            cur, origin = self.read(fam)
+            last = cur.lo + (passes - 1) * step if passes and step is not None and cur is not None and cur.lo == cur.hi else -1
+            if step == 0:
+                continue
+            if 0 <= last <= 0xFFFF:
+                self.write(fam, Range(min(cur.lo, last), max(cur.lo, last), abs(step)), min(origin, counted))
+            else:
+                self._forget(fam)
 
-def index_range(dec: Decoder, trail: list[Insn], reg: str) -> tuple[Range, int] | None:
-    """Range of `reg` at the last instruction of `trail` (the jump), and the trail index it depends on."""
+
+def _loop_left(dec: Decoder, trail: list[Insn], i: int) -> tuple[int, list[Insn]] | None:
+    """If the branch trail[i] leaves a loop closed by `loop`: (trail index of the loop's first instruction, the
+    instructions from the branch on to that `loop`). The loop is one straight run, and the trail holds it from its
+    first instruction to the branch."""
+    ins = trail[i]
+    a = ins.end if trail[i + 1].addr == ins.near_target else ins.near_target
+    tail = [ins]
+    while tail[-1] is ins or tail[-1].cond != LOOP:
+        nxt = dec(ins.space, a)
+        if nxt is None or len(tail) > LOOP_TAIL or (nxt.kind != "other" and nxt.cond != LOOP):
+            return None
+        tail.append(nxt)
+        a = nxt.end
+    head = next((h for h in range(i, -1, -1) if trail[h].addr == tail[-1].near_target), None)
+    if head is None or any(p.end != q.addr for p, q in zip(trail[head:i], trail[head + 1 : i + 1])):
+        return None
+    return head, tail
+
+
+def index_range(dec: Decoder, trail: list[Insn], reg: str) -> tuple[Range, int, list[list[Insn]]] | None:
+    """Range of `reg` at the last instruction of `trail` (the jump), the trail index it depends on, and for every
+    counted loop the trail leaves the instructions from the leaving branch to the `loop` (_loop_left)."""
     it = _Interp(dec)
+    loops: dict[int, tuple[int, list[Insn]]] = {}  # trail index of a loop's first instruction -> (of its leaving branch, tail)
+    for i, ins in enumerate(trail[:-1]):
+        if ins.kind == "jcc" and (left := _loop_left(dec, trail, i)) is not None:
+            loops[left[0]] = (i, left[1])
     setter: tuple[Insn, int | None, int] | None = None  # (cmp, version of its register then, trail index)
     for i, ins in enumerate(trail[:-1]):
+        if i in loops:
+            leave, tail = loops[i]
+            it.loop_head(trail[i : leave + 1] + tail[1:-1])
+            setter = None  # a later pass arrives with the flags of the loop's end
         if ins.kind == "jcc":
             nxt = trail[i + 1].addr
             direction = None
@@ -256,6 +329,8 @@ def index_range(dec: Decoder, trail: list[Insn], reg: str) -> tuple[Range, int] 
                 direction = "taken"
             if setter is not None and direction is not None:
                 it.constrain(setter[0], setter[1], ins, direction, setter[2])
+            if ins.cond in (0x10, 0x11, LOOP):
+                it.write("cx", None, i)  # loopne, loope and loop count CX down
             continue
         modified, _tested = dec.flags(ins)
         if modified:
@@ -267,7 +342,29 @@ def index_range(dec: Decoder, trail: list[Insn], reg: str) -> tuple[Range, int] 
         if ins.mnemonic != "cmp":
             it.step(ins, i)
     value, origin = it.read(reg)
-    return (value, origin) if value is not None else None
+    return (value, origin, [tail for _leave, tail in loops.values()]) if value is not None else None
+
+
+def _keys(dec: Decoder, data: bytes, base: int, trail: list[Insn], reg: str, index: Range, count: int,
+          loops: list[list[Insn]]) -> tuple[list[int], str]:
+    """The value per entry that the code read through `reg` (`mov ax, cs:[bx]`, `cmp al, cs:[bx + 1]`) while it held
+    the value the jump then uses: what a search loop over a value table compared against. ([], "") if it read none.
+    Looked for back to where `reg` was written, and no further than the start of a loop (an earlier pass differs)."""
+    heads = {tail[-1].near_target for tail in loops}
+    for ins in reversed(trail[:-1]):
+        if any(FAMILY.get(r) == reg for r in dec.writes(ins)):
+            break
+        m = re.search(rf"(byte|word) ptr cs:\[{reg}(?: ([+-]) (\w+))?\]", ins.op_str)
+        if m is not None and (ins.mnemonic == "cmp" or (ins.mnemonic == "mov" and not ins.op_str.startswith(m.group(0)))):
+            size = 1 if m.group(1) == "byte" else 2
+            d = int(m.group(3), 0) * (-1 if m.group(2) == "-" else 1) if m.group(3) else 0
+            at = [base + ((d + index.lo + k * index.stride) & 0xFFFF) for k in range(count)]
+            if any(a + size > len(data) for a in at):
+                break
+            return [int.from_bytes(data[a : a + size], "little") for a in at], f"{ins.addr:04x} ({m.group(0)})"
+        if ins.addr in heads:
+            break
+    return [], ""
 
 
 def resolve(prog: Program, dec: Decoder, ijmp: Insn, trail: list[Insn]) -> JumpTable | str:
@@ -300,8 +397,8 @@ def resolve(prog: Program, dec: Decoder, ijmp: Insn, trail: list[Insn]) -> JumpT
     found = index_range(dec, trail, reg)
     if found is None:
         return f"index range of {reg} unknown"
-    index, origin = found
-    if index.stride % 2 or index.lo % 2:
+    index, origin, loops = found
+    if index.stride % 2:
         return f"index {reg} is not a multiple of 2 ({index})"
     count = (index.hi - index.lo) // index.stride + 1
     if count > MAX_ENTRIES:
@@ -319,4 +416,5 @@ def resolve(prog: Program, dec: Decoder, ijmp: Insn, trail: list[Insn]) -> JumpT
         if ins is None or ins.kind == "invalid":
             return f"entry {k} target {t:#x} does not decode"
         targets.append(t)
-    return JumpTable(ijmp.addr, segment, disp & 0xFFFF, index, targets, origin)
+    keys, key_read = _keys(dec, space.data, base, trail, reg, index, count, loops)
+    return JumpTable(ijmp.addr, segment, disp & 0xFFFF, index, targets, origin, loops, keys, key_read)

@@ -115,7 +115,7 @@ def render_listing(fid: str, d: Descent, owners: dict[tuple[str, int], set[str]]
         for i in c:
             lines.append(f"{i.addr:04x}  {i.raw.hex():<12}  {i.text}")
             if i.addr in d.tables:
-                lines.append(f"; {d.tables[i.addr].describe()}")
+                lines += [f"; {line}" for line in d.tables[i.addr].lines()]
         prev = c
     return "\n".join(lines) + "\n"
 
@@ -298,7 +298,7 @@ def diagnostics(prog: Program, an: Analysis) -> dict:
             for r in sorted(an.resolved, key=lambda r: (r.use.fid, r.use.ins.addr))
         },
         "sentinel_stubs": sorted(nid(prog.root, s) for s in prog.sentinel_stubs),
-        "jump_tables": {nid(split_id(fid)[0], site): t.describe() for fid, d in sorted(an.descents.items()) for site, t in sorted(d.tables.items())},
+        "jump_tables": {nid(split_id(fid)[0], site): "; ".join(t.lines()) for fid, d in sorted(an.descents.items()) for site, t in sorted(d.tables.items())},
         "hazard_counts": dict(collections.Counter(h["kind"] for h in hazards)),
         "hazards": hazards,
     }
@@ -363,9 +363,12 @@ game directory in one tree.
    function's start. `push cs; push x3; retf` is treated as an indirect call. A jump target that is not a
    call target is part of every function that jumps to it (shared tails appear in each such listing). A
    near jump through a word table (`jmp word ptr cs:[bx + T]`, or DS-relative where that segment's own
-   code loads DS with it) is followed into every entry when the straight-line path before it bounds the
-   index (unsigned `cmp` + `jcc` guards and the usual index arithmetic, on a path nothing else enters);
-   the cases are part of the function. Other indirect jumps stay unresolved (`analysis.json` says why).
+   code loads DS with the segment: `mov r, SEG; mov ds, r` or `mov r, cs; mov ds, r`) is followed into every
+   entry when the straight-line path before it bounds the index (unsigned `cmp` + `jcc` guards and the usual
+   index arithmetic, on a path nothing else enters). Where that path leaves a loop that CX counts
+   (`mov cx, N; ...; loop`), a register every pass moves by one constant has its N values: the search of a
+   value table that ends in `jmp cs:[bx + 2N]`. The cases are part of the function. Other indirect jumps
+   stay unresolved (`analysis.json` says why).
 3. **Pointers.** Each function is walked as dataflow (per-path states up to 8 ways into a point, joined at
    loop heads) tracking constants, segments (relocated words, CS, DGROUP = the DS the startup code loads from a
    relocated segment word or from CS, plus any constant `add` in between: `mov ax, cs; add ax, 2b0h; mov ds, ax`),
@@ -396,7 +399,8 @@ game directory in one tree.
    decoded.
 5. **Conditions** are direct control dependence (post-dominator based) of the site on the function's
    conditional jumps: the innermost branches deciding whether the site executes (several entries can be
-   alternatives when different branches lead to the same block). `expression` is the jump plus the
+   alternatives when different branches lead to the same block). Which entry a jump table takes is no such
+   branch: its cases carry the conditions of the table jump itself. `expression` is the jump plus the
    nearest preceding instruction on the single-predecessor path that writes a flag the jump tests (or a
    call, whose callee sets the flags).
 6. **Links between programs** (edges with `link`, `returns: true`):
@@ -458,7 +462,10 @@ Listings: `units/<file name, . as _>/functions/<id with : as _>.asm`, one line p
 (`XXXX  bytes  text`). The chunk starting at the function's entry comes first, the remaining chunks
 follow in address order, `; ...` separates non-contiguous chunks, and a chunk that other functions
 also reach (shared tails) is preceded by `; shared with <id>, ... (N more)`. A resolved jump table is
-described on the line after its jump: `; jump table cs:00cd, index 0x0..0xa step 2 (6 entries): <targets>`.
+described on the line after its jump: `; jump table cs:00cd, index 0x0..0xa step 2 (6 entries): <targets>`
+(the entries in table order, as listing addresses). When the code read a value through the same register
+before jumping (the search of a value table), a second line pairs each value with its entry:
+`; value read at 1a40 (word ptr cs:[bx]) -> entry: 0008 -> 1a80, 0043 -> 1a52`.
 """
 
 

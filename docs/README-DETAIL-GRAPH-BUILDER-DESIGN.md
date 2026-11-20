@@ -102,6 +102,16 @@ straight-line path before it bounds the index (unsigned `cmp`/`jcc` guards and t
 the path has no other entry, and every entry decodes in the same space. Otherwise the jump stays unresolved with a
 reason. Cases join the function's listing rather than becoming nodes.
 
+Two things widen "bounded by the code" without leaving it. Where the path leaves a loop that CX counts
+(`mov cx, N; ...; loop`, one straight run nothing else enters), a 16-bit register every pass moves by the same
+constant holds its N values: a compiler's `switch` over scattered values searches a value table this way and jumps
+through the table behind it. The listing then pairs each value with its case, since the values are data no
+instruction shows. And a DS-relative table is read from the code segment when code in that segment loads DS with it,
+from a relocated segment word or from CS.
+
+In the function's control flow a followed table jump leads to each case. Which entry is taken is not a branch the
+graph can name, so a case carries the conditions of the jump itself.
+
 ### Pointers
 
 Each function is walked as dataflow over 16-bit registers, DS/ES and the words pushed on the current run. Values are
@@ -165,11 +175,11 @@ declared modules checked against the bytes, and the output format. The server on
 listing line format `addr  bytes  mnemonic operands`; its address parser (`src/graph/addresses.ts`) learns how code
 writes addresses (`frames`) by voting over edges, and knows the x86 call spellings (`lcall seg, off`, `call word …`).
 
-Known gaps even within its domain: Borland C sparse `switch` (a compare loop over a value table, then
-`jmp cs:[bx+2N]`) and function pointers in record fields are not followed; aligned indexed writes only mark a table
-"also filled at run time". A near pointer in initialised data has no relocation to mark it, so a near call through a
-variable no code fills stays unresolved. A table read by an indirect jump is followed only when the code bounds its
-index; the bound taken from the bytes for near call tables is not applied to it. A segment in which nothing is decoded
+Known gaps even within its domain: function pointers in record fields are not followed; aligned indexed writes only
+mark a table "also filled at run time". A near pointer in initialised data has no relocation to mark it, so a near
+call through a variable no code fills stays unresolved. A table read by an indirect jump is followed only when the
+code bounds its index (guards, or a search loop counted by `loop`; a search written with `dec`/`jnz` or `repne scasw`
+is not read); the bound taken from the bytes for near call tables is not applied to it. A segment in which nothing is decoded
 is taken for data, so the far-call operands of a code segment nothing reaches name their targets as guesses. A handler
 a program installs for itself is listed, but its own `int n` sites get no edge to it. The Microsoft LINK overlay
 interrupt is taken to be 3Fh, the default; a program linked with another number aborts.

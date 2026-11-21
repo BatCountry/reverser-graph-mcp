@@ -617,3 +617,31 @@ def test_files_table_lists_batch_files_after_programs():
 def test_files_table_says_where_loaded_code_comes_from():
     p = Program(b"\xcb", None, "FX.PAK-0001", None, layout="COM", in_file=False, loaded_from="record 1 of FX.PAK, which A.EXE reads")
     assert files_table([p], {"FX.PAK-0001": "h"}) == "| FX.PAK-0001 | COM; record 1 of FX.PAK, which A.EXE reads | `h` |"
+
+
+def test_write_tree_writes_the_data_references_one_row_per_line(tmp_path):
+    (tmp_path / "suite").mkdir()
+    # A.COM: mov ax, [0x200]; mov [0x202], ax; ret.  PLAY.EXE names no memory location.
+    d = write(tmp_path / "suite", {"A.COM": b"\xa1\x00\x02\xa3\x02\x02\xc3", "PLAY.EXE": PLAY_EXE})
+    g = game.build(d)
+    write_tree(tmp_path / "out", g.programs, g.graph, g.diagnostics, tuple(g.scripts))
+    text = (tmp_path / "out/navigation/data_references.json").read_text()
+    row = '  {"segment": "ds", "register": "ds", "offset": %d, "indexed": false, "access": "%s", "function": "A_COM:0100", "site": "A_COM:%s", "instruction": "%s"}'
+    assert text == ('{\n "A.COM": [\n' + row % (0x200, "reads", "0100", "mov ax, word ptr [0x200]") + ",\n"
+                    + row % (0x202, "writes", "0103", "mov word ptr [0x202], ax") + '\n ],\n "PLAY.EXE": [\n\n ]\n}\n')
+    assert json.loads(text)["PLAY.EXE"] == []
+
+
+def test_write_tree_writes_frames_and_control_flow_one_function_per_line(tmp_path):
+    (tmp_path / "suite").mkdir()
+    # A.COM: mov ax, [bp + 4]; ret.  B.COM: jz +0 (both ways lead to the ret); ret
+    d = write(tmp_path / "suite", {"A.COM": b"\x8b\x46\x04\xc3", "B.COM": b"\x74\x00\xc3"})
+    g = game.build(d)
+    write_tree(tmp_path / "out", g.programs, g.graph, g.diagnostics, tuple(g.scripts))
+    nav = tmp_path / "out/navigation"
+    assert (nav / "frame_references.json").read_text() == '{\n "A_COM:0100": [{"site": "0100", "slot": 4, "indexed": false, "access": "reads"}]\n}\n'
+    assert (nav / "control_flow.json").read_text() == (
+        '{\n "A_COM:0100": [{"instructions": ["0100", "0103"], "next": [[null, ""]]}],\n'
+        ' "B_COM:0100": [{"instructions": ["0100"], "next": [["0102", "taken"], ["0102", "fallthrough"]]}, {"instructions": ["0102"], "next": [[null, ""]]}]\n}\n')
+    readme = (nav / "README.md").read_text()
+    assert "`frame_references.json`: per function" in readme and "`control_flow.json`: per function" in readme and "{site, slot, indexed, access}" in readme

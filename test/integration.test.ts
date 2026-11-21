@@ -37,15 +37,28 @@ afterAll(async () => {
 describe("tools and discovery", () => {
   test("every advertised tool is listed", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["add_implementation", "annotate", "dos_memory_offset", "dos_port", "interrupts", "module", "next_work", "trace"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["add_implementation", "annotate", "data_references", "dos_memory_offset", "dos_port", "interrupts", "module", "next_work", "trace"]);
     for (const t of tools) expect(t.description?.length ?? 0).toBeGreaterThan(40);
   });
   test("resource templates cover reference docs and disassembly", async () => {
     const { resourceTemplates } = await client.listResourceTemplates();
     const names = resourceTemplates.map((t) => t.uriTemplate);
-    for (const expected of ["dosref://entry/{id}", "dosref://port/{group}", "dosref://query/{handle}", `${DISASM}module/{id}`, `${DISASM}trace/{handle}`, `${DISASM}listing/{id}`, `${DISASM}work-unit/{id}`]) {
+    for (const expected of ["dosref://entry/{id}", "dosref://port/{group}", "dosref://query/{handle}", `${DISASM}module/{id}`, `${DISASM}trace/{handle}`, `${DISASM}listing/{id}`, `${DISASM}work-unit/{id}`, `${DISASM}data-references/{address}`]) {
       expect(names).toContain(expected);
     }
+  });
+  test("data_references names who writes and reads a variable, and its resource reads back", async () => {
+    const r = await client.callTool({ name: "data_references", arguments: { address: "mov ax, word ptr [0x1200]" } });
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toContain("# ds:[1200]\n\n2 instructions in 2 functions name ds:[1200] by its address: writes 1, reads 1.");
+    expect(text(r)).toContain(`- ${IDS.A} writes it at module-0001:0010: \`mov word ptr [0x1200], ax\` — ${DISASM}module/${encodeURIComponent(IDS.A)}`);
+    expect(r.structuredContent).toMatchObject({ address: "ds:[1200]", all_references: `${DISASM}data-references/ds%3A1200` });
+    const all = await client.readResource({ uri: `${DISASM}data-references/ds%3A1200` });
+    expect(JSON.stringify(all.contents)).toContain(`${IDS.C} reads it at module-0002:0030`);
+    const bad = await client.callTool({ name: "data_references", arguments: { address: "1200" } });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toContain("Bare digits are ambiguous");
+    await expect(client.readResource({ uri: `${DISASM}data-references/nope` })).rejects.toThrow(/Give a data address: ds:4f2a/);
   });
   test("next_work names a work unit whose detail and the ranked queue read back", async () => {
     const r = await client.callTool({ name: "next_work", arguments: {} });

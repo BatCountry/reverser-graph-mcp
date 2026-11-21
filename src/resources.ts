@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { listingFor } from "./graph/files.js";
 import { annotateCallTargets } from "./graph/listing-targets.js";
 import { selectLines } from "./graph/line-range.js";
+import { lookupDataReferences, renderDataReferencesText } from "./graph/datarefs.js";
 import { disasmUris, renderModuleText, renderNeighbors, lookupModule, type Context } from "./graph/tools.js";
 import { renderWorkPlan, renderWorkUnit, WORK_PLAN_ROWS } from "./tools/next_work.js";
 import type { Correspondence } from "./compare/correspond.js";
@@ -256,6 +257,22 @@ export function registerResources(server: McpServer, graphContext: () => Context
       const doc = queryCache.get(one(v, "handle"));
       if (!doc) throw new Error("This trace handle has expired or never existed. Repeat the original module/trace call to get a fresh one.");
       return markdown(uri, doc.text);
+    },
+  );
+
+  server.registerResource(
+    "disassembly-data-references",
+    new ResourceTemplate(`${uris.base}data-references/{address}`, { list: undefined }),
+    {
+      title: "Every instruction that names a data address",
+      description: "What the `data_references` tool returns for this address (ds:4f2a, 0714h:0124, MAIN_OVR-0020:000f; URL-encoded), with every instruction listed instead of the first few.",
+      mimeType: "text/markdown",
+      cacheHint: { ttlMs: 5 * 60_000, cacheScope: "private" },
+    },
+    (uri, v) => {
+      const result = lookupDataReferences(graphContext(), { address: decoded(one(v, "address")) }, true);
+      if (!result.ok) throw new Error(result.error);
+      return markdown(uri, renderDataReferencesText(result.output));
     },
   );
 

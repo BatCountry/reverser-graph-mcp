@@ -474,11 +474,11 @@ def successors(d: Descent) -> dict[int, list[tuple[int, str]]]:
     return succ
 
 
-def control_dependence(d: Descent) -> dict[int, list[tuple[int, str]]]:
-    """For every instruction, the (jcc address, direction) pairs it is directly control dependent on. Which entry a
-    followed jump table takes is no such pair, so its cases depend on what the jump itself depends on."""
-    if not d.insns:
-        return {}
+def basic_blocks(d: Descent) -> tuple[dict[int, list[int]], dict[int, list[tuple[int, str]]], dict[int, int]]:
+    """The function's basic blocks: (first instruction -> its instructions in execution order, first instruction ->
+    successors as (first instruction of the next block or EXIT, "taken" / "fallthrough" / ""), instruction -> the
+    first instruction of its block). A block starts at the entry and wherever an instruction is not the only
+    successor of its only predecessor."""
     succ = successors(d)
     _space, start = split_id(d.root)
     preds: dict[int, list[int]] = collections.defaultdict(list)
@@ -486,7 +486,6 @@ def control_dependence(d: Descent) -> dict[int, list[tuple[int, str]]]:
         for b, _ in outs:
             if b != EXIT:
                 preds[b].append(a)
-    # basic blocks
     leader = {a for a in d.insns if a == start or len(preds[a]) != 1 or len(succ[preds[a][0]]) != 1}
     block_of: dict[int, int] = {}
     blocks: dict[int, list[int]] = {}
@@ -503,6 +502,15 @@ def control_dependence(d: Descent) -> dict[int, list[tuple[int, str]]]:
     bsucc: dict[int, list[tuple[int, str]]] = {
         b: [(block_of[t] if t != EXIT else EXIT, lab) for t, lab in succ[body[-1]]] for b, body in blocks.items()
     }
+    return blocks, bsucc, block_of
+
+
+def control_dependence(d: Descent) -> dict[int, list[tuple[int, str]]]:
+    """For every instruction, the (jcc address, direction) pairs it is directly control dependent on. Which entry a
+    followed jump table takes is no such pair, so its cases depend on what the jump itself depends on."""
+    if not d.insns:
+        return {}
+    blocks, bsucc, block_of = basic_blocks(d)
     # blocks that cannot reach EXIT (infinite loops) get a virtual exit edge
     bpred: dict[int, set[int]] = collections.defaultdict(set)
     for b, outs in bsucc.items():

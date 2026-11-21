@@ -29,6 +29,9 @@ done that isn't. The server gives agents a small, structured way through the pro
   follows the program by name instead of doing address arithmetic. What the graph cannot name says why:
   `unresolved (indirect)`, with the reason and how to translate it. Your lightweight models might get stuck here, but
   your frontier orchestrator should be able to reason its way out of the trap.
+- **Globals with their readers and writers.** `data_references` takes a data address (`ds:4f2a`, or `[0x4f2a]` pasted
+  from a listing) and names every instruction that writes it, reads it, calls through it or takes its address, so the
+  agent asks "who sets this flag?" instead of searching listings.
 - **Reference lookups built in.** `interrupts`, `dos_port` and `dos_memory_offset` explain `INT 21h AH=3Dh`,
   `OUT 3C8h` or `B800:0000` for the registers in front of the agent, so it doesn't guess at DOS and hardware behaviour. 
   We've bundled documentation for standard BIOS and MS-DOS interrupts, well-known memory offsets, and the ports in 

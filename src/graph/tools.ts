@@ -21,6 +21,7 @@ export interface DisasmUris {
   trace: (handle: string) => string;
   workPlan: string;
   workUnit: (id: string) => string;
+  dataReferences: (address: string) => string;
 }
 
 /** Every game's server serves the same paths, so the tree comes first: a client holding several servers (one per
@@ -35,6 +36,7 @@ export function disasmUris(tree: string): DisasmUris {
     trace: (handle) => `${base}trace/${handle}`,
     workPlan: `${base}work-plan`,
     workUnit: (id) => `${base}work-unit/${encodeURIComponent(id)}`,
+    dataReferences: (address) => `${base}data-references/${encodeURIComponent(address)}`,
   };
 }
 

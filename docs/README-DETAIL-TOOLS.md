@@ -5,6 +5,7 @@
 | `next_work` | You are reimplementing the program and ask "what should I implement next?": one bite-sized work unit, its members, what it depends on, how to record it ([work units](README-DETAIL-WORK-UNITS.md)) |
 | `module` | You are reading or porting a function: listing, callers/callees (linked), every entrypoint's call chain to it, implementation status, work unit |
 | `trace` | You need the call path between two specific modules |
+| `data_references` | You see a global, a table or a stored pointer (`mov [0x4f2a], ax`, `lcall [0x4f20]`) and ask who else writes it, reads it, calls through it or takes its address |
 | `interrupts` | You see `INT nn` (DOS, BIOS, mouse, EMS, DPMI) and want what it does for the registers set before it |
 | `dos_memory_offset` | You see a segment/offset (video RAM, BIOS data area, IVT, ROM font) and want its meaning |
 | `dos_port` | You see `IN`/`OUT` (VGA/EGA/CGA, palette, PIT/speaker, PIC, keyboard, joystick, Tandy SN76496) |
@@ -17,6 +18,12 @@ Results are short; deep detail is behind `dosref://` (reference) and `disasm://`
 `disasm://` URI starts with the tree's directory name (`disasm://alpha/…`, `disasm://beta/…`): with one server per tree
 loaded, a client routes each URI to the server of that tree only (several servers serving the same paths would all
 claim the first server's URIs).
+
+`data_references` answers from `navigation/data_references.json`, which the generator writes (a tree built before it
+existed has none, and the tool says to rebuild). The result names the first 12 instructions, writers first, and links
+`disasm://<tree>/data-references/{address}` for all of them. It also says what it cannot see: tables indexed from up
+to 100h below the address (each base can be looked up in turn), the same offset read through a segment register whose
+value is not known at that instruction, and accesses through a pointer, which start where the address is taken.
 
 Each function has one listing, `disasm://<tree>/listing/{id}` (id URL-encoded): its instructions decoded from the
 binary by following its control flow, one line per instruction (`1a2c  fc  cld`, offset within its space). Every call

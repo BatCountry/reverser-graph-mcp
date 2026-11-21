@@ -757,3 +757,162 @@ def test_near_table_that_code_writes_is_not_read_from_the_bytes():
     root = code(0x40, {0: store + CALL_CS_BX + w16(0x10) + DOS_EXIT, 0x10: words(0x18, 0x1C, 0x18, 0x1C), 0x18: RET, 0x1C: RET})
     _b, _p, _d, an, g = run(root)
     assert unknown(g, f"{R}:0000", 5) == f"0000h:[index+0010] is also written through an index (at {R}:0000)" and an.proof == {}
+
+
+# ---------------------------------------------------------------- data references
+
+
+def refs(an, **want) -> list[tuple]:
+    return [(pointers.fmt_seg(r.seg) if r.seg else None, r.register, r.off, r.indexed, r.access, r.site)
+            for r in an.facts.refs if all(getattr(r, k) == v for k, v in want.items())]
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (b"\xa1\x00\x01", ["reads"]),  # mov ax, [0x100]
+    (b"\xa3\x00\x01", ["writes"]),  # mov [0x100], ax
+    (b"\xff\x06\x00\x01", ["reads and writes"]),  # inc word ptr [0x100]
+    (b"\x84\x06\x00\x01", ["uses"]),  # test [0x100], al: the decoder does not say
+    (b"\x8d\x1e\x00\x01", ["takes the address of"]),  # lea bx, [0x100]
+    (b"\xff\x1e\x00\x01", ["calls through"]),  # lcall [0x100]
+    (b"\xff\x16\x00\x01", ["calls through"]),  # call word ptr [0x100]
+    (b"\xff\x26\x00\x01", ["jumps through"]),  # jmp word ptr [0x100]
+    (b"\xa4", ["writes", "reads"]),  # movsb es:[di], [si]
+    (b"\x89\xd8", []),  # mov ax, bx
+    (b"\xcd\x35\x06\x00\x01", []),  # 8087 emulator: its operand is not decoded
+])
+def test_what_an_instruction_does_with_its_memory_operands(raw, expected):
+    prog = Program(mz(raw + b"\x90" * 8), None, "MAIN.EXE")
+    dec = Decoder(prog)
+    assert dec.mem_access(dec(R, 0)) == expected
+
+
+@pytest.mark.parametrize("op,ref", [
+    ("xword ptr [0x48]", MemRef("xword", None, (), 0x48)),
+    ("word ptr fs:[0x70]", MemRef("word", "fs", (), 0x70)),
+    ("word [0x48]", None),  # the decoder always writes `ptr`
+    ("ptr", None),
+])
+def test_parse_mem_takes_any_size_and_segment(op, ref):
+    assert parse_mem(op) == ref
+
+
+def test_data_references_of_each_operand_shape():
+    parts = [
+        b"\xa1\x00\x01",  # 00 mov ax, [0x100]
+        b"\xa3\x02\x01",  # 03 mov [0x102], ax
+        b"\xbb\x10\x00",  # 06 mov bx, 0x10
+        b"\x8b\x87\x00\x02",  # 09 mov ax, [bx + 0x200]: bx is known, so this is [0x210]
+        b"\x2e\xa1\x20\x00",  # 0d mov ax, cs:[0x20]
+        b"\x26\xa1\x30\x00",  # 11 mov ax, es:[0x30]: ES is not known
+        b"\x36\xa1\x40\x00",  # 15 mov ax, ss:[0x40]
+        b"\x64\xa1\x70\x00",  # 19 mov ax, fs:[0x70]
+        b"\x8b\x46\xfa",  # 1d mov ax, [bp - 6]: a stack slot
+        b"\x26\x8b\x45\x04",  # 20 mov ax, es:[di + 4]: through a pointer in an unknown segment
+        b"\x8b\x84\x00\x03",  # 24 mov ax, [si + 0x300]: a table at 0x300
+        b"\xc4\x3e\x80\x01",  # 28 les di, [0x180]
+        b"\x26\x8b\x45\x04",  # 2c mov ax, es:[di + 4]: a field of the record [0x180] points at
+        b"\xdb\x3e\x60\x01",  # 30 fstp xword ptr [0x160]
+        b"\xa4",  # 34 movsb: through registers
+        DOS_EXIT,
+    ]
+    _b, _p, _d, an, _g = run(code(0x60, {0: b"".join(parts)}))
+    assert refs(an) == [
+        ("ds", "ds", 0x100, False, "reads", f"{R}:0000"),
+        ("ds", "ds", 0x102, False, "writes", f"{R}:0003"),
+        ("ds", "ds", 0x210, False, "reads", f"{R}:0009"),
+        ("0000h", "cs", 0x20, False, "reads", f"{R}:000d"),
+        (None, "es", 0x30, False, "reads", f"{R}:0011"),
+        (None, "ss", 0x40, False, "reads", f"{R}:0015"),
+        (None, "fs", 0x70, False, "reads", f"{R}:0019"),
+        ("ds", "ds", 0x300, True, "reads", f"{R}:0024"),
+        ("ds", "ds", 0x180, False, "reads", f"{R}:0028"),
+        ("ds", "ds", 0x160, False, "writes", f"{R}:0030"),
+        ("ds", "ds", 0, True, "reads", f"{R}:0034"),  # movsb reads [si]: a table at 0, as far as the bytes say
+    ]
+    assert {r.fid for r in an.facts.refs} == {f"{R}:0000"} and an.facts.refs[0].text == "mov ax, word ptr [0x100]"
+
+
+def test_a_far_pointer_the_code_builds_is_a_reference_to_what_it_points_at():
+    parts = [far_var(0x100, 0x30), DOS_EXIT]
+    _b, _p, _d, an, _g = run(code(0x40, {0: b"".join(parts), 0x30: RETF}))
+    assert refs(an, access="takes the address of") == [("0000h", "", 0x30, False, "takes the address of", f"{R}:0000")]
+    [r] = [r for r in an.facts.refs if r.access == "takes the address of"]
+    assert r.text == "mov word ptr [0x100], 0x30" and r.fid == f"{R}:0000"
+    # the stores themselves are references too, once each however many paths reach them
+    assert refs(an, access="writes") == [("ds", "ds", 0x100, False, "writes", f"{R}:0000"), ("ds", "ds", 0x102, False, "writes", f"{R}:0006")]
+
+
+def test_data_references_in_an_overlay_name_its_space():
+    mod = Module(b"\x2e\xa1\x10\x00" + RETF, [0])  # mov ax, cs:[0x10]
+    b, _p, _d, an, _g = run(code(0x10, {0: DOS_EXIT}), [mod])
+    m = b.module_id(0)
+    assert refs(an) == [(m, "cs", 0x10, False, "reads", f"{m}:0000")]
+
+
+def test_data_reference_rows_are_ordered_by_location():
+    from types import SimpleNamespace
+
+    from dosgraph.emit import data_references
+
+    ref = lambda seg, off, site, indexed=False: pointers.DataRef(seg, "ds", off, indexed, "reads", "F", site, "mov")  # noqa: E731
+    facts = pointers.Facts(refs=[ref(None, 0x10, "S:9"), ref(DGROUP, 0x20, "S:2"), ref(DGROUP, 0x20, "S:1"), ref(DGROUP, 0x10, "S:3", True),
+                                 ref(DGROUP, 0x10, "S:4"), ref(("para", 0x714), 0x124, "S:5"), ref(("space", "TOOL_EXE-0003", 0x7B0), 0xB, "S:6")])
+    rows = data_references(SimpleNamespace(facts=facts))
+    assert [(r["segment"], r["offset"], r["indexed"], r["site"]) for r in rows] == [
+        (None, 0x10, False, "S:9"), ("0714h", 0x124, False, "S:5"), ("TOOL_EXE-0003", 0x7BB, False, "S:6"),  # a space: the listing's address
+        ("ds", 0x10, False, "S:4"), ("ds", 0x10, True, "S:3"), ("ds", 0x20, False, "S:1"), ("ds", 0x20, False, "S:2")]
+    assert rows[0] == {"segment": None, "register": "ds", "offset": 0x10, "indexed": False, "access": "reads", "function": "F",
+                       "site": "S:9", "instruction": "mov"}
+
+
+# ---------------------------------------------------------------- frame references
+
+
+def test_frame_references_are_bp_relative_stack_operands():
+    from dosgraph.emit import frame_references
+
+    parts = [
+        b"\x55\x8b\xec",  # 00 push bp; mov bp, sp
+        b"\x89\x46\xfa",  # 03 mov [bp - 6], ax
+        b"\x8b\x46\x04",  # 06 mov ax, [bp + 4]
+        b"\xff\x46\xfa",  # 09 inc word ptr [bp - 6]
+        b"\x8d\x7e\xe0",  # 0c lea di, [bp - 0x20]
+        b"\x8a\x42\xe0",  # 0f mov al, [bp + si - 0x20]: an array in the frame
+        b"\x36\x8b\x46\x00",  # 12 mov ax, ss:[bp]
+        b"\x3e\x8b\x46\x04",  # 16 mov ax, ds:[bp + 4]: BP as an index into the data segment, not a frame slot
+        b"\x36\x8b\x05",  # 1a mov ax, ss:[di]: the stack through another register
+        b"\xa1\x00\x01",  # 1d mov ax, [0x100]
+        b"\xff\x5e\x06",  # 20 lcall [bp + 6]
+        DOS_EXIT,
+    ]
+    _b, _p, _d, an, _g = run(code(0x40, {0: b"".join(parts)}))
+    assert frame_references(an) == {f"{R}:0000": [
+        {"site": "0003", "slot": -6, "indexed": False, "access": "writes"},
+        {"site": "0006", "slot": 4, "indexed": False, "access": "reads"},
+        {"site": "0009", "slot": -6, "indexed": False, "access": "reads and writes"},
+        {"site": "000c", "slot": -0x20, "indexed": False, "access": "takes the address of"},
+        {"site": "000f", "slot": -0x20, "indexed": True, "access": "reads"},
+        {"site": "0012", "slot": 0, "indexed": False, "access": "reads"},
+        {"site": "0020", "slot": 6, "indexed": False, "access": "calls through"},
+    ]}
+    # the DS-relative operand is a data reference; a frame slot is none
+    assert refs(an) == [("ds", "ds", 4, True, "reads", f"{R}:0016"), ("ds", "ds", 0x100, False, "reads", f"{R}:001d")]
+
+
+@pytest.mark.parametrize("disp,slot", [(0x7FFF, 0x7FFF), (0x8000, -0x8000), (0xFFFF, -1), (0, 0)])
+def test_frame_slot_displacements_are_signed(disp, slot):
+    root = code(0x20, {0: b"\x8b\x86" + w16(disp) + DOS_EXIT})  # mov ax, [bp + disp16]
+    _b, _p, _d, an, _g = run(root)
+    assert [r.slot for r in an.facts.frame] == [slot]
+
+
+def test_frame_reference_rows_are_grouped_by_function_in_listing_order():
+    from types import SimpleNamespace
+
+    from dosgraph.emit import frame_references
+
+    ref = lambda fid, addr, slot, access="reads": pointers.FrameRef(fid, addr, slot, False, access)  # noqa: E731
+    facts = pointers.Facts(frame=[ref("B:0", 4, -2), ref("A:0", 9, 4), ref("A:0", 2, -6, "writes"), ref("A:0", 2, -8)])
+    rows = frame_references(SimpleNamespace(facts=facts))
+    assert list(rows) == ["A:0", "B:0"] and [(r["site"], r["slot"]) for r in rows["A:0"]] == [("0002", -8), ("0002", -6), ("0009", 4)]
+    assert frame_references(SimpleNamespace(facts=pointers.Facts())) == {}

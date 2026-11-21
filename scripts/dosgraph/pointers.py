@@ -35,7 +35,7 @@ R8 = {"al": "ax", "ah": "ax", "cl": "cx", "ch": "cx", "dl": "dx", "dh": "dx", "b
 READ_ONLY = {"cmp", "test", "push", "call", "lcall", "jmp", "ljmp"}
 DGROUP = ("dgroup",)
 NUM = re.compile(r"^-?(?:0x[0-9a-f]+|\d+)$")
-MEM = re.compile(r"^(?:(byte|word|dword|qword|tbyte) )?(?:ptr )?(?:([cdes]s):)?\[([^\]]+)\]$")
+MEM = re.compile(r"^(?:(?:(\w+) )?ptr )?(?:([cdefgs]s):)?\[([^\]]+)\]$")  # any operand size (`xword ptr`), any segment
 TERM = re.compile(r"([+-]?)\s*([a-z]{2}|0x[0-9a-f]+|\d+)")
 TABLE_SPAN = 256  # entries a table run may have
 ALT_MAX = 8  # alternatives a merged value may hold before it becomes unknown
@@ -162,6 +162,31 @@ class Use:
     through: str
 
 
+@dataclass(frozen=True)
+class DataRef:
+    """One instruction naming a memory location by its address: `mov [4f2ah], ax`, `call word ptr cs:[bx + 10h]`."""
+
+    seg: tuple | None  # segment key; None: the segment register's value is not known at the site
+    register: str  # the segment register the instruction reads through
+    off: int  # the address; of an indexed operand, its displacement (the table's base)
+    indexed: bool
+    access: str  # Decoder.mem_access, or "takes the address of" for a far pointer the code builds
+    fid: str
+    site: str
+    text: str
+
+
+@dataclass(frozen=True)
+class FrameRef:
+    """One instruction naming a stack slot relative to BP: `mov [bp - 6], ax`, `lea di, [bp - 20h]`."""
+
+    fid: str
+    addr: int
+    slot: int  # signed displacement from BP
+    indexed: bool  # another register is added: `[bp + si - 20h]`
+    access: str  # Decoder.mem_access
+
+
 @dataclass
 class Facts:
     loads: list[PointerLoad] = field(default_factory=list)
@@ -172,6 +197,8 @@ class Facts:
     code_segments: set[int] = field(default_factory=set)  # paragraphs of the root segments holding decoded instructions
     starts: dict[str, set[int]] = field(default_factory=dict)  # space -> first bytes of the decoded instructions
     inside: dict[str, set[int]] = field(default_factory=dict)  # space -> their other bytes
+    refs: list[DataRef] = field(default_factory=list)  # every memory operand with an address (data_references.json)
+    frame: list[FrameRef] = field(default_factory=list)  # every BP-relative stack operand (frame_references.json)
 
 
 @dataclass(frozen=True)
@@ -417,11 +444,29 @@ class _Walk:
             for w in worlds_in(a) or []:
                 self.step(fid, d, d.insns[a], w)
 
+    def references(self, fid: str, ins: Insn, st: dict, site: str, ops: list[str]) -> None:
+        """Record the memory operands that name an address: an absolute one (also through registers holding
+        constants), or `[index + T]` in a known segment. An absolute operand read through a segment register whose
+        value is not known here is recorded without a segment. A BP-relative operand in the stack segment is a
+        frame reference instead; pointer dereferences name nothing."""
+        refs = [r for op in ops if (r := parse_mem(op)) is not None]
+        for ref, access in zip(refs, self.dec.mem_access(ins) if refs else [], strict=True):
+            if "bp" in ref.regs and ref.seg in (None, "ss"):
+                slot = ref.disp - 0x10000 if ref.disp >= 0x8000 else ref.disp
+                self.facts.frame.append(FrameRef(fid, ins.addr, slot, len(ref.regs) > 1, access))
+            w = self.locate(st, ins, ref)
+            register = ref.seg or "ds"
+            if w is not None and w[0] in ("abs", "indexed"):
+                self.facts.refs.append(DataRef(w[1], register, w[2], w[0] == "indexed", access, fid, site, ins.text))
+            elif w is None and not ref.regs:
+                self.facts.refs.append(DataRef(None, register, ref.disp, False, access, fid, site, ins.text))
+
     def step(self, fid: str, d, ins: Insn, st: dict) -> None:
         site = nid(ins.space, ins.addr)
         m = ins.mnemonic
         ops = [o.strip() for o in ins.op_str.split(",")] if ins.op_str else []
         stack: list = st["@stack"]
+        self.references(fid, ins, st, site, ops)
         if m == "mov" and len(ops) == 2:
             dst, src = ops
             if dst in R16 or dst in ("ds", "es"):
@@ -641,10 +686,16 @@ def collect(prog: Program, dec: Decoder, descents: dict, kinds: dict, preds_of, 
     w = _Walk(prog, dec, facts, dg, descents)
     for fid in sorted(descents):
         d = descents[fid]
+        built = len(facts.loads)
         w.run(fid, d, preds_of(d), "interrupt-vector" in kinds.get(fid, ()))
+        for p in facts.loads[built:]:  # a far pointer the code builds names the location it points at
+            at = d.insns[split_id(p.off_site)[1]]
+            facts.refs.append(DataRef(p.seg, "", p.off & 0xFFFF, False, "takes the address of", fid, p.off_site, at.text))
     facts.loads = list(dict.fromkeys(facts.loads))  # each path through a site records it again
     facts.stores = list(dict.fromkeys(facts.stores))
     facts.vectors = list(dict.fromkeys(facts.vectors))
+    facts.refs = list(dict.fromkeys(facts.refs))
+    facts.frame = list(dict.fromkeys(facts.frame))
     return facts
 
 

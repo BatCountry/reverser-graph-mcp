@@ -9,7 +9,7 @@ from pathlib import Path
 from . import pointers
 from .binary import Program, file_space, nid, split_id
 from .errors import FormatError
-from .flow import Analysis, Descent, control_dependence, flag_setter, straight_preds
+from .flow import EXIT, Analysis, Descent, basic_blocks, control_dependence, flag_setter, straight_preds
 from .x86 import Decoder, Insn
 
 GENERATOR = "scripts/build_callgraph.py"
@@ -169,10 +169,13 @@ def build_graph(prog: Program, dec: Decoder, an: Analysis) -> dict:
                 nodes[target] = {"id": target, "kind": "unknown-target", "space": None, "address": None,
                                  "file_offset": None, "source_file": None, "listing": None, "entrypoint": False,
                                  "reason": (extra or {}).pop("reason", None) or "not traced"}
+            # what a call pushes as its return address: the next instruction; of `push cs; push x; retf`, x
+            back = ins.end if ins.kind in ("call", "icall") else d.cont.get(ins.addr)
             rows[(ins.addr, target)] = {
                 "conditions": site_conditions(dec, d, ins.addr, cd, preds),
                 "instruction": ins.text,
                 "instruction_offset": nid(ins.space, ins.addr),
+                **({} if back is None else {"return_offset": nid(ins.space, back)}),
                 "returns": returns,
                 "source": fid,
                 "target": target,
@@ -270,6 +273,43 @@ def combine(parts: list[dict], files: dict[str, str], frame_list: list[dict], pr
         "edges": edges,
         "aliases": dict(sorted(aliases.items())),
     }
+
+
+def data_references(an: Analysis) -> list[dict]:
+    """Every instruction that names a memory location by its address (pointers.DataRef), ordered by location. The
+    segment is written as indirect edges write it in `through` (`ds`, `0714h`, a space); in a space the offset is the
+    address its listings show."""
+    rows = [{
+        "segment": None if r.seg is None else pointers.fmt_seg(r.seg),
+        "register": r.register,
+        "offset": r.off + (r.seg[2] if r.seg is not None and r.seg[0] == "space" else 0),
+        "indexed": r.indexed,
+        "access": r.access,
+        "function": r.fid,
+        "site": r.site,
+        "instruction": r.text,
+    } for r in an.facts.refs]
+    return sorted(rows, key=lambda r: (r["segment"] or "", r["segment"] is None, r["offset"], r["indexed"], r["site"], r["function"], r["access"]))
+
+
+def frame_references(an: Analysis) -> dict[str, list[dict]]:
+    """Per function, every instruction that names a stack slot relative to BP (pointers.FrameRef), in listing order;
+    `site` is the address the listing shows."""
+    out: dict[str, list[dict]] = collections.defaultdict(list)
+    for r in sorted(an.facts.frame, key=lambda r: (r.fid, r.addr, r.slot, r.indexed, r.access)):
+        out[r.fid].append({"site": f"{r.addr:04x}", "slot": r.slot, "indexed": r.indexed, "access": r.access})
+    return dict(out)
+
+
+def control_flow(an: Analysis) -> dict[str, list[dict]]:
+    """Per function, its basic blocks (flow.basic_blocks) by first instruction: the instructions of each in execution
+    order and where it goes next, as listing addresses; `null` is leaving the function."""
+    out: dict[str, list[dict]] = {}
+    for fid in sorted(an.descents):
+        blocks, nxt, _block_of = basic_blocks(an.descents[fid])
+        out[fid] = [{"instructions": [f"{a:04x}" for a in body],
+                     "next": [[None if t == EXIT else f"{t:04x}", how] for t, how in nxt[b]]} for b, body in sorted(blocks.items())]
+    return out
 
 
 def diagnostics(prog: Program, an: Analysis) -> dict:
@@ -458,6 +498,48 @@ game directory in one tree.
 candidates, every constant far pointer built, every indirect transfer with its targets and why the rest
 is unknown, data-in-code hazards); it is not part of the graph contract.
 
+## Data references (`data_references.json`)
+
+Per program, one row for every instruction that names a memory location by its address:
+`{{segment, register, offset, indexed, access, function, site, instruction}}`.
+
+- `segment`: `ds` (the program's data segment, which its code holds in DS), a load-image segment (`0714h`) or a
+  space (`MAIN_OVR-0020`: code and data of that overlay), written as `through` writes them; `null` when the
+  instruction reads through a segment `register` whose value the dataflow of step 3 does not know there.
+- `offset`: the address within the segment (in a space: the address its listings show); with `indexed: true`
+  the displacement of an operand that also has a register whose value is not known (`[bx + 1200h]`: a table
+  based at 1200h).
+- `access`: `reads`, `writes`, `reads and writes`, `calls through`, `jumps through`, `takes the address of` (`lea`,
+  or a far pointer the code builds: the row then names the instruction loading the offset), or `uses` where the
+  decoder does not say which.
+
+Not recorded: stack frame operands (`[bp - 6]`, anything through SS with a register), operands through a pointer
+or a register in a segment not known (`es:[di + 4]`), and the operands of 8087-emulator interrupts, which the
+listing shows as bytes. So a location with no row may still be accessed through a pointer: the rows that take its
+address, and tables indexed from a lower address, are where to look.
+
+## Call sites, frames and control flow
+
+An edge whose instruction is a call carries `return_offset`: the node-style address the call pushes as its return
+address (the instruction after it; for `push cs; push x; retf`, x when it is known). Jumps and falling into another
+function have none. The calls of one function to another, in address order, are its edges sorted by
+`instruction_offset`.
+
+`frame_references.json`: per function, one row for every operand relative to BP in the stack segment,
+`{{site, slot, indexed, access}}`, in listing order. `site` is the address the listing shows, `slot` the signed
+displacement (`[bp - 6]` is -6, `[bp + 4]` is 4), `indexed` says another register is added (`[bp + si - 20h]`), and
+`access` is as in the data references (`takes the address of` for `lea`: the slot is then reached through that
+pointer). In a function that begins `push bp; mov bp, sp` positive slots are what its caller pushed and negative
+ones its locals; the generator does not check that a function does. Not recorded: stack accesses through SP
+or through another register (a nested procedure reading its parent's frame through a pointer to it).
+
+`control_flow.json`: per function, its basic blocks in address order of their first instruction,
+`{{instructions, next}}`. `instructions` are listing addresses in execution order (a block follows an unconditional
+jump to code nothing else reaches, so they need not be adjacent). `next` is a list of `[address, how]`: the first
+instruction of the block that follows, or `null` for leaving the function (a return, a jump or fall into another
+function, a call that does not return, an indirect jump not followed); `how` is `taken` or `fallthrough` after a
+conditional jump and empty otherwise. A followed jump table has one entry per distinct case.
+
 Listings: `units/<file name, . as _>/functions/<id with : as _>.asm`, one line per reachable instruction
 (`XXXX  bytes  text`). The chunk starting at the function's entry comes first, the remaining chunks
 follow in address order, `; ...` separates non-contiguous chunks, and a chunk that other functions
@@ -465,7 +547,7 @@ also reach (shared tails) is preceded by `; shared with <id>, ... (N more)`. A r
 described on the line after its jump: `; jump table cs:00cd, index 0x0..0xa step 2 (6 entries): <targets>`
 (the entries in table order, as listing addresses). When the code read a value through the same register
 before jumping (the search of a value table), a second line pairs each value with its entry:
-`; value read at 1a40 (word ptr cs:[bx]) -> entry: 0008 -> 1a80, 0043 -> 1a52`.
+`; value read at 1a40 (word ptr cs:[bx]) -> entry: 0011 -> 1a80, 0022 -> 1a52`.
 """
 
 
@@ -494,6 +576,12 @@ def write_tree(out: Path, programs: list[tuple[Program, Analysis]], graph: dict,
     nav.mkdir(parents=True, exist_ok=True)
     (nav / "callgraph.json").write_text(json.dumps(graph, indent=1) + "\n")
     (nav / "analysis.json").write_text(json.dumps(diag, indent=1) + "\n")
+    refs = [f' {json.dumps(prog.exe_name)}: [\n' + ",\n".join("  " + json.dumps(r) for r in data_references(an)) + "\n ]"
+            for prog, an in programs]
+    (nav / "data_references.json").write_text("{\n" + ",\n".join(refs) + "\n}\n")
+    for name, rows in (("frame_references.json", frame_references), ("control_flow.json", control_flow)):
+        entries = [f" {json.dumps(fid)}: {json.dumps(v)}" for _prog, an in programs for fid, v in rows(an).items()]
+        (nav / name).write_text("{\n" + ",\n".join(entries) + "\n}\n")
     p = graph["provenance"]
     (nav / "README.md").write_text(README.format(
         generator=p["generator"],

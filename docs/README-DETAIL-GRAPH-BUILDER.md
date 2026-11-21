@@ -26,8 +26,12 @@ for n), `runs` / `loads` (a function naming another program in a string constant
 each `.BAT` as a node whose lines `run` programs (method: step 6 of the tree's `navigation/README.md`).
 `dosgraph/pointers.py` follows constant far pointers from where the code builds them, or where the linker left them
 in the load image, to the calls and jumps through them; a dataflow that never settles is a bug and aborts the build.
-The graph's `frames` table records how the code
-writes addresses (unrelocated far calls, offsets within a space).
+The same walk records every instruction that names a memory location by its address, written to
+`navigation/data_references.json` (the `data_references` tool answers from it). The tree also holds
+`navigation/frame_references.json` (each function's BP-relative stack operands),
+`navigation/control_flow.json` (its basic blocks) and a `return_offset` on every call edge; the tree's
+`navigation/README.md` documents all of them. The graph's `frames` table records how the code writes addresses
+(unrelocated far calls, offsets within a space).
 
 ## Code loaded from data files
 

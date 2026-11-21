@@ -286,7 +286,7 @@ def switch(setup=b"\xb9\x03\x00\xbb\x61\x00", read=b"\x2e\x8b\x07", test=b"\x3b\
            jump=b"\x2e\xff\x67\x06", loop_to: int | None = None, default: bytes = b"\xc3") -> tuple[dict, int, int]:
     """The search of a value table and the jump through the table behind it, at 10h:
     `mov cx, 3; mov bx, 61h; L: mov ax, cs:[bx]; cmp ax, [bp - 0Ah]; je J; add bx, 2; loop L; jmp 50h; J: jmp cs:[bx + 6]`
-    with the values 8, 43h, 58h at 61h and their cases 40h, 42h, 44h at 67h. Returns (parts, L, J)."""
+    with the values 11h, 22h, 33h at 61h and their cases 40h, 42h, 44h at 67h. Returns (parts, L, J)."""
     head = 0x10 + len(setup)
     je = head + len(read) + len(test)
     loop = je + 2 + len(step)
@@ -294,7 +294,7 @@ def switch(setup=b"\xb9\x03\x00\xbb\x61\x00", read=b"\x2e\x8b\x07", test=b"\x3b\
     back = (head if loop_to is None else loop_to) - (loop + 2)
     body = setup + read + test + bytes([0x74, site - (je + 2)]) + step + bytes([0xE2, back & 0xFF, 0xEB, 0x50 - site]) + jump
     return ({0: call(0, 0x10) + DOS_EXIT, 0x10: body, 0x40: b"\xc3", 0x42: b"\xc3", 0x44: b"\xc3", 0x50: default,
-             0x61: words(8, 0x43, 0x58), 0x67: words(*CASES)}, head, site)
+             0x61: words(0x11, 0x22, 0x33), 0x67: words(*CASES)}, head, site)
 
 
 def test_search_loop_over_a_value_table_is_followed():
@@ -304,7 +304,7 @@ def test_search_loop_over_a_value_table_is_followed():
     t = d.tables[site]
     assert t.targets == CASES and t.index == Range(0x61, 0x65, 2) and not unresolved(an) and set(CASES) <= set(d.insns)
     assert t.lines() == ["jump table cs:0006, index 0x61..0x65 step 2 (3 entries): 0040 0042 0044",
-                         "value read at 0016 (word ptr cs:[bx]) -> entry: 0008 -> 0040, 0043 -> 0042, 0058 -> 0044"]
+                         "value read at 0016 (word ptr cs:[bx]) -> entry: 0011 -> 0040, 0022 -> 0042, 0033 -> 0044"]
     assert f"; {t.lines()[0]}\n; {t.lines()[1]}\n" in render_listing(f"{R}:0010", d)
     assert diagnostics(p, an)["jump_tables"] == {f"{R}:{site:04x}": "; ".join(t.lines())}
 
@@ -367,11 +367,11 @@ def test_a_range_read_inside_the_loop_does_not_depend_on_it():
 
 
 @pytest.mark.parametrize(("pieces", "read"), [
-    ({"read": b"\x2e\x8a\x07", "test": b"\x3a\x46\xf6"}, "0016 (byte ptr cs:[bx]) -> entry: 08 -> 0040, 43 -> 0042, 58 -> 0044"),
+    ({"read": b"\x2e\x8a\x07", "test": b"\x3a\x46\xf6"}, "0016 (byte ptr cs:[bx]) -> entry: 11 -> 0040, 22 -> 0042, 33 -> 0044"),
     ({"setup": b"\xb9\x03\x00\xbb\x63\x00", "read": b"", "test": b"\x2e\x3b\x47\xfe", "jump": b"\x2e\xff\x67\x04"},
-     "0016 (word ptr cs:[bx - 2]) -> entry: 0008 -> 0040, 0043 -> 0042, 0058 -> 0044"),
+     "0016 (word ptr cs:[bx - 2]) -> entry: 0011 -> 0040, 0022 -> 0042, 0033 -> 0044"),
     ({"setup": b"\xb9\x03\x00\xbb\x5f\x00", "read": b"", "test": b"\x2e\x3b\x47\x02", "jump": b"\x2e\xff\x67\x08"},
-     "0016 (word ptr cs:[bx + 2]) -> entry: 0008 -> 0040, 0043 -> 0042, 0058 -> 0044"),
+     "0016 (word ptr cs:[bx + 2]) -> entry: 0011 -> 0040, 0022 -> 0042, 0033 -> 0044"),
     ({"read": b"\x2e\x89\x07"}, None),  # mov cs:[bx], ax: a store
     ({"read": b"\x2e\x03\x07"}, None),  # add ax, cs:[bx]: not a value compared
     ({"read": b"\x2e\x8b\x87\x00\x7f"}, None),  # mov ax, cs:[bx + 7F00h]: outside the program

@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-from capstone import CS_ARCH_X86, CS_MODE_16, Cs
+from capstone import CS_AC_READ, CS_AC_WRITE, CS_ARCH_X86, CS_MODE_16, Cs
 from capstone import x86_const as X
 
 from .binary import OVERLAY_TRAP, Program, nid
@@ -13,6 +13,7 @@ from .binary import OVERLAY_TRAP, Program, nid
 PREFIXES = {0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3}
 NON_8086_PREFIXES = {0x64, 0x65, 0x66, 0x67}
 NON_8086_OPCODES = {0x0F, 0x60, 0x61, 0x62, 0x63, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0xC0, 0xC1, 0xC8, 0xC9}
+MEM_ACCESS = {CS_AC_READ: "reads", CS_AC_WRITE: "writes", CS_AC_READ | CS_AC_WRITE: "reads and writes"}
 PRINTABLE = set(range(0x20, 0x7F))
 
 
@@ -148,6 +149,15 @@ class Decoder:
                 regs = {ci.reg_name(r) for r in ci.regs_access()[1]} - {"flags", "ip"}
             self._writes[key] = frozenset(regs)
         return self._writes[key]
+
+    def mem_access(self, ins: Insn) -> list[str]:
+        """What an instruction does with each of its memory operands, in operand order: "reads", "writes" or "reads
+        and writes" (capstone semantics); "calls through", "jumps through" and "takes the address of" where that is
+        all it does with the operand (an indirect call or jump, `lea`)."""
+        if ins.kind in ("icall", "ijmp"):
+            return ["calls through" if ins.kind == "icall" else "jumps through"]
+        return ["takes the address of" if ins.mnemonic == "lea" else MEM_ACCESS.get(op.access, "uses")
+                for ci in self.csd.disasm(ins.raw, ins.addr, 1) for op in ci.operands if op.type == X.X86_OP_MEM]
 
 
 def classify(ins: Insn, relocated_words: set[int], root_space: str) -> None:

@@ -13,6 +13,9 @@ Turbo Pascal-era toolchains, and what it would take to point the same design at 
 <tree>/
   navigation/callgraph.json   nodes, edges, programs, frames, aliases, counts, provenance
   navigation/analysis.json    per-program diagnostics: unresolved jumps and why, tables, non-returning functions
+  navigation/data_references.json   per program, every instruction that names a memory location by its address
+  navigation/frame_references.json  per function, every operand relative to BP in the stack segment
+  navigation/control_flow.json      per function, its basic blocks and where each goes next
   navigation/README.md        the method, step by step, and the schema (written by emit.py, so it matches the code)
   units/<space>/functions/<SPACE>_<addr>.asm   one control-flow listing per function
 ```
@@ -139,6 +142,32 @@ The load image is read under the same model, because a linker writes pointers th
   inside a decoded instruction nor inside the table; otherwise this is no such table and nothing is taken.
 * `INT 21h/25h` with a constant DS:DX installs a handler whatever AL holds; where AL is not a constant the handler
   is a proven function for an unknown vector.
+
+### Data references
+
+The same walk records every memory operand that names an address: an absolute one (`mov [4f2ah], ax`, also where
+the registers in it hold constants), or `[register + T]` in a known segment (a table based at T). The segment is what
+the dataflow knows the segment register holds there: the program's data segment, a load-image segment, or an overlay.
+Where it does not know, the operand is recorded with the register instead of a segment, so a reader sees a possible
+reference rather than none. What the instruction does with the operand (reads, writes, calls through, takes the
+address of) is the decoder's statement, and `uses` where the decoder makes none. A far pointer the code builds is a
+reference to the location it points at.
+
+A location can be reached without being named: through a pointer, through a table indexed from a lower base, from an
+8087-emulator interrupt whose operand the listing shows as bytes. `data_references.json` holds what the bytes say
+and the server says what they cannot (`src/graph/datarefs.ts`).
+
+### Per-function facts
+
+A call edge carries `return_offset`, the address the call pushes. `frame_references.json` holds the BP-relative
+stack operands of each function, with the same access words as the data references; it says nothing about what a
+slot is, and does not check that the function sets BP up as a frame pointer. `control_flow.json` holds each
+function's basic blocks and successors, the same blocks the conditions are computed on (`flow.basic_blocks`).
+
+These are what the decoder already knows, written out so that a consumer does not parse listing text a second time.
+Stack depth at a call, argument lists, return registers and signatures are not derived: they are a decompiler's
+analyses, and the bytes cannot always settle them (an indirect call to a callee that pops its own arguments,
+hand-written assembler).
 
 ### Links between programs
 

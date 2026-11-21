@@ -67,6 +67,11 @@ export function makeFixture(): Fixture {
   const functions = path.join(disassembly, "units", "play", "functions");
   mkdirSync(path.join(disassembly, "navigation"), { recursive: true });
   writeFileSync(path.join(disassembly, "navigation", "callgraph.json"), JSON.stringify(graphJson()));
+  // A stores a variable that C reads
+  const ref = (access: string, fn: string, site: string, instruction: string) => ({ segment: "ds", register: "ds", offset: 0x1200, indexed: false, access, function: fn, site, instruction });
+  writeFileSync(path.join(disassembly, "navigation", "data_references.json"), JSON.stringify({
+    "MAIN.EXE": [ref("reads", IDS.C, "module-0002:0030", "mov ax, word ptr [0x1200]"), ref("writes", IDS.A, "module-0001:0010", "mov word ptr [0x1200], ax")],
+  }));
   mkdirSync(functions, { recursive: true });
   writeFileSync(path.join(functions, "module-0001_0010.asm"), `${LISTING_A}\n`);
   writeFileSync(path.join(functions, "module-0002_0030.asm"), "; module-0002:0030\n0030  c3          ret\n");

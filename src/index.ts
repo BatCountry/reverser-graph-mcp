@@ -17,6 +17,7 @@ import { instrumentServer, startTelemetry } from "./telemetry.js";
 import { register as addImplementation } from "./tools/add_implementation.js";
 import { register as annotate } from "./tools/annotate.js";
 import type { ToolDeps } from "./tools/common.js";
+import { register as dataReferences } from "./tools/data_references.js";
 import { register as dosMemoryOffset } from "./tools/dos_memory_offset.js";
 import { register as dosPort } from "./tools/dos_port.js";
 import { register as interrupts } from "./tools/interrupts.js";
@@ -37,6 +38,7 @@ const INSTRUCTIONS = `Reference helper for reverse engineering MS-DOS-era progra
 - Seeing \`IN\`/\`OUT\` on a port (3C4h/3C5h, 3C8h, 3DAh, 61h, 0C0h, 201h)? Call \`dos_port\` with the port; add the AL/AX value being written and, for indexed registers, the index, to get the bit-by-bit meaning (VGA/EGA/CGA video, palette, PIT/speaker, keyboard, PIC, joystick, Tandy/PCjr SN76496 sound).
 - Results are short on purpose. Follow the dosref:// resource links for full interrupt entries, walkthroughs, assembler reference notes, field tables and video-mode tables, only when you need them.
 - Working in the disassembly? Call \`module\` with a node name or any address pasted from a listing (lcall 0x41, 0x25; 5cd:0634): listing, callers/callees, how every entrypoint reaches it, and implementation status. \`trace\` gives the call path between two modules. When you finish a module call \`add_implementation\`; when you only learn something call \`annotate\`. (Disassembly tree: ${config.disassemblyRoot}.)
+- Wondering who else touches a variable or table (\`mov word ptr [0x4f2a], ax\`, \`lcall [0x4f20]\`)? Call \`data_references\` with the address (ds:4f2a): every instruction in the program that reads it, writes it, calls or jumps through it or takes its address, by function.
 - Reimplementing the program and unsure where to go next? Call \`next_work\`: it hands you the next bite-sized work unit (a function plus helpers only it uses), preferring ones whose callees are already done, and how to record it when finished.`;
 
 /** Compare mode: what the extra tools are for, appended to the instructions. */
@@ -91,7 +93,7 @@ function createServer() {
   if (compare) registerCompareResources(server, compare.names, compare.correspondence);
 
   const deps: ToolDeps = { graphContext, progressContext, ...(compare ? { compare } : {}) };
-  for (const register of [dosMemoryOffset, dosPort, interrupts, moduleTool, trace, nextWork, addImplementation, annotate, counterpart, compareTool]) register(server, deps);
+  for (const register of [dosMemoryOffset, dosPort, interrupts, moduleTool, trace, dataReferences, nextWork, addImplementation, annotate, counterpart, compareTool]) register(server, deps);
 
   return server;
 }

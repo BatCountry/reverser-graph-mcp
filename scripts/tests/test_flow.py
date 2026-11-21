@@ -103,10 +103,48 @@ def test_retf_dispatch_with_and_without_return_address():
     assert successors(with_ret)[0x17] == [(0x18, "")]
     assert without.cont == {} and f"{R}:0020" in an.noreturn
     assert edges_from(g, f"{R}:0010")[f"{R}:0017"] == {
-        "conditions": [], "instruction": "retf", "instruction_offset": f"{R}:0017", "returns": True,
+        "conditions": [], "instruction": "retf", "instruction_offset": f"{R}:0017", "return_offset": f"{R}:0018", "returns": True,
         "source": f"{R}:0010", "target": f"unknown:{R}:0017", "through": "far pointer pushed and entered with retf"}
     assert g["nodes"][f"unknown:{R}:0017"]["reason"] == "the far pointer pushed for retf is computed at run time"
-    assert edges_from(g, f"{R}:0020")[f"{R}:0024"]["returns"] is False
+    # no return address is known for the second dispatch
+    assert edges_from(g, f"{R}:0020")[f"{R}:0024"]["returns"] is False and "return_offset" not in edges_from(g, f"{R}:0020")[f"{R}:0024"]
+
+
+def test_a_call_edge_names_the_return_address_it_pushes():
+    # 00: call 0x20; 03: lcall [0x100]; 07: call 0x10; 0a: jmp 0x30 (a tail jump).   10: call 0x30, then it falls into 0x20
+    root = code(0x40, {0: call(0, 0x20) + b"\xff\x1e\x00\x01" + call(7, 0x10) + b"\xeb\x24", 0x10: call(0x10, 0x30),
+                       0x20: b"\xc3", 0x30: b"\xc3"})
+    _b, _p, _d, _an, g = run(root)
+    returns = {(e["instruction_offset"], e["target"]): e.get("return_offset") for e in g["edges"] if e["source"] in (f"{R}:0000", f"{R}:0010")}
+    assert returns == {
+        (f"{R}:0000", f"{R}:0020"): f"{R}:0003",  # a near call: the next instruction
+        (f"{R}:0003", f"unknown:{R}:0003"): f"{R}:0007",  # an indirect far call
+        (f"{R}:0007", f"{R}:0010"): f"{R}:000a",
+        (f"{R}:000a", f"{R}:0030"): None,  # a jump pushes nothing
+        (f"{R}:0010", f"{R}:0030"): f"{R}:0013",
+        (f"{R}:001f", f"{R}:0020"): None,  # falling into the next function
+    }
+
+
+def test_basic_blocks_follow_lone_jumps_and_name_what_follows():
+    from dosgraph.emit import control_flow
+    from dosgraph.flow import basic_blocks
+
+    # 10: je 14; 12: jmp 18; 14: nop; 15: jmp 18; 17: (skipped); 18: ret
+    root = code(0x30, {0: call(0, 0x10) + DOS_EXIT, 0x10: b"\x74\x02\xeb\x04\x90\xeb\x01\x90\xc3"}, b"\x90")
+    _b, _p, _d, an, _g = run(root)
+    blocks, nxt, block_of = basic_blocks(an.descents[f"{R}:0010"])
+    assert blocks == {0x10: [0x10], 0x12: [0x12], 0x14: [0x14, 0x15], 0x18: [0x18]}
+    assert nxt == {0x10: [(0x14, "taken"), (0x12, "fallthrough")], 0x12: [(0x18, "")], 0x14: [(0x18, "")], 0x18: [(EXIT, "")]}
+    assert block_of == {0x10: 0x10, 0x12: 0x12, 0x14: 0x14, 0x15: 0x14, 0x18: 0x18}
+    flow = control_flow(an)
+    assert flow[f"{R}:0010"] == [
+        {"instructions": ["0010"], "next": [["0014", "taken"], ["0012", "fallthrough"]]},
+        {"instructions": ["0012"], "next": [["0018", ""]]},
+        {"instructions": ["0014", "0015"], "next": [["0018", ""]]},
+        {"instructions": ["0018"], "next": [[None, ""]]}]
+    # the entry: a call does not end a block; the DOS exit leaves the function
+    assert flow[f"{R}:0000"] == [{"instructions": ["0000", "0003", "0005"], "next": [[None, ""]]}] and list(flow) == sorted(flow)
 
 
 def test_conditions_and_flag_setter():
